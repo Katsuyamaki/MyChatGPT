@@ -1,6 +1,6 @@
-package com.webgpt.app;
+package com.katsuyamaki.mychatgpt;
 
-import com.webgpt.app.BuildConfig;
+import com.katsuyamaki.mychatgpt.BuildConfig;
 
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
@@ -55,10 +55,10 @@ import androidx.core.splashscreen.SplashScreen;
 import androidx.core.splashscreen.SplashScreenViewProvider;
 import androidx.webkit.WebViewCompat;
 
-import com.webgpt.app.webview.CrashTracker;
-import com.webgpt.app.webview.WebViewManagerDialog;
-import com.webgpt.app.webview.WebViewUtil;
-import com.webgpt.app.webview.WelcomeDialog;
+import com.katsuyamaki.mychatgpt.webview.CrashTracker;
+import com.katsuyamaki.mychatgpt.webview.WebViewManagerDialog;
+import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
+import com.katsuyamaki.mychatgpt.webview.WelcomeDialog;
 import com.google.android.material.progressindicator.LinearProgressIndicator;
 
 import java.io.File;
@@ -73,7 +73,7 @@ import java.util.Map;
 
 public class MainActivity extends Activity {
 
-    private static final String TAG = "WebGPTApp";
+    private static final String TAG = "MyChatGPTApp";
     private static final String PREFS_NAME = "webgpt_prefs";
 
     private static final String URL = "https://chatgpt.com/";
@@ -117,7 +117,7 @@ public class MainActivity extends Activity {
     private Uri pendingCameraUri;
     private File pendingCameraFile;
 
-    // Pending share-from-outside: file to inject into the WebGPT composer.
+    // Pending share-from-outside: file to inject into the MyChatGPT composer.
     // Volatile: written on the background copy thread, read on the UI thread.
     // Cleared in onStop so a forgotten share can never hijack a later
     // file-picker invocation.
@@ -221,21 +221,21 @@ public class MainActivity extends Activity {
         // ─── Foreign-task relay (text-share task bug, rounds 18-19) ────────
         // On some devices/OEMs a TEXT share launches the target INSIDE the
         // sender's task (so back returns to the sender, recents keeps the
-        // SENDER's identity, and the real WebGPT task is ignored — a fresh
+        // SENDER's identity, and the real MyChatGPT task is ignored — a fresh
         // instance every time). Detection: we are not the root of our task.
         //
         // Round 18 tried to fix this by re-launching ourselves with NEW_TASK
         // directly from onCreate — but at that point this instance has NO
-        // window and is not resumed, so OEM task managers created the WebGPT
+        // window and is not resumed, so OEM task managers created the MyChatGPT
         // task WITHOUT ever bringing it to the front (round 19 symptom: text
-        // copied + "paste it" toast, but WebGPT never opened).
+        // copied + "paste it" toast, but MyChatGPT never opened).
         //
         // Corrected approach: hand the share to a momentary transparent
         // trampoline (ShareRelayActivity) started in THIS task — a plain
         // same-task start the system always honors — and finish. Once the
         // trampoline is genuinely resumed (our process foreground, window
         // attached), IT forwards the share to MainActivity with NEW_TASK —
-        // a foreground start, which is guaranteed to bring WebGPT's own task
+        // a foreground start, which is guaranteed to bring MyChatGPT's own task
         // to the front on every Android version and OEM.
         //
         // Files are deliberately excluded: their share intents can carry URI
@@ -550,13 +550,13 @@ public class MainActivity extends Activity {
             android.content.ClipboardManager clipboard = (android.content.ClipboardManager)
                     getSystemService(Context.CLIPBOARD_SERVICE);
             if (clipboard != null) {
-                android.content.ClipData clip = android.content.ClipData.newPlainText("WebGPT", text);
+                android.content.ClipData clip = android.content.ClipData.newPlainText("MyChatGPT", text);
                 clipboard.setPrimaryClip(clip);
                 Log.i(TAG, "Text copied to clipboard");
                 // Android 13+ already shows its own "Copied" overlay;
                 // avoid doubling it up.
                 if (Build.VERSION.SDK_INT < 33) {
-                    Toast.makeText(this, "Text copied — paste it into WebGPT", Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, "Text copied — paste it into MyChatGPT", Toast.LENGTH_LONG).show();
                 }
             }
         } catch (Exception e) {
@@ -981,12 +981,12 @@ public class MainActivity extends Activity {
                             (android.content.ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
                     if (clipboard != null) {
                         android.content.ClipData clip =
-                                android.content.ClipData.newPlainText("WebGPT", text);
+                                android.content.ClipData.newPlainText("MyChatGPT", text);
                         clipboard.setPrimaryClip(clip);
-                        Log.i("WebGPTApp", "Text copied to clipboard via JS override");
+                        Log.i("MyChatGPTApp", "Text copied to clipboard via JS override");
                     }
                 } catch (Exception e) {
-                    Log.e("WebGPTApp", "copyToClipboard (JS) failed", e);
+                    Log.e("MyChatGPTApp", "copyToClipboard (JS) failed", e);
                 }
             });
         }

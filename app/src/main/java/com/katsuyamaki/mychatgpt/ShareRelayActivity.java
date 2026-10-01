@@ -1,4 +1,4 @@
-package com.webgpt.app;
+package com.katsuyamaki.mychatgpt;
 
 import android.app.Activity;
 import android.content.ClipData;
@@ -12,7 +12,7 @@ import android.widget.Toast;
 
 /**
  * Momentary transparent trampoline that moves a TEXT share out of a
- * foreign (the sender's) task into WebGPT's own task.
+ * foreign (the sender's) task into MyChatGPT's own task.
  *
  * Background (rounds 18-19): some OEM share paths launch MainActivity
  * (singleTask) INSIDE the sender's task — non-root, wrong recents
@@ -21,7 +21,7 @@ import android.widget.Toast;
  * start that early comes from an activity with NO window that is not
  * resumed yet; several OEM task managers create the target task but
  * never bring it to the foreground (symptom: text is copied + "paste
- * it" toast appears, yet WebGPT never opens — the backgrounded
+ * it" toast appears, yet MyChatGPT never opens — the backgrounded
  * instance still ran handleSharedText).
  *
  * This relay fixes the ordering. MainActivity starts it in the SAME
@@ -32,7 +32,7 @@ import android.widget.Toast;
  * share to MainActivity with FLAG_ACTIVITY_NEW_TASK. A start issued by
  * a resumed, window-owning activity is foreground-guaranteed on every
  * Android version and OEM (it is the same path every app-to-app launch
- * uses), so WebGPT's own task is always brought to the front: an
+ * uses), so MyChatGPT's own task is always brought to the front: an
  * existing instance receives the share via onNewIntent, and a cold
  * start boots normally in the proper task.
  *
@@ -49,7 +49,7 @@ import android.widget.Toast;
  */
 public class ShareRelayActivity extends Activity {
 
-    private static final String TAG = "WebGPTApp";
+    private static final String TAG = "MyChatGPTApp";
 
     /** Original ACTION_SEND / ACTION_PROCESS_TEXT intent, forwarded as-is. */
     static final String EXTRA_SHARE_INTENT = "share_intent";
@@ -106,10 +106,10 @@ public class ShareRelayActivity extends Activity {
             ClipboardManager cb = (ClipboardManager)
                     getSystemService(Context.CLIPBOARD_SERVICE);
             if (cb != null) {
-                cb.setPrimaryClip(ClipData.newPlainText("WebGPT", text));
+                cb.setPrimaryClip(ClipData.newPlainText("MyChatGPT", text));
                 // Android 13+ shows its own "Copied" overlay already.
                 if (android.os.Build.VERSION.SDK_INT < 33) {
-                    Toast.makeText(this, "Text copied — paste it into WebGPT",
+                    Toast.makeText(this, "Text copied — paste it into MyChatGPT",
                             Toast.LENGTH_LONG).show();
                 }
             }

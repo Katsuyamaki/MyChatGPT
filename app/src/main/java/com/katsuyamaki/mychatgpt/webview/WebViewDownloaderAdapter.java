@@ -1,4 +1,4 @@
-package com.webgpt.app.webview;
+package com.katsuyamaki.mychatgpt.webview;
 
 import android.content.Context;
 import android.view.LayoutInflater;
@@ -8,7 +8,7 @@ import android.widget.TextView;
 
 import androidx.recyclerview.widget.RecyclerView;
 
-import com.webgpt.app.R;
+import com.katsuyamaki.mychatgpt.R;
 import com.google.android.material.button.MaterialButton;
 
 /**

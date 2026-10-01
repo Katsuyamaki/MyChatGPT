@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">WebGPT</string>
-    <string name="settings_title">WebGPT Settings</string>
+    <string name="app_name">MyChatGPT</string>
+    <string name="settings_title">MyChatGPT Settings</string>
 
     <!-- WebView Manager -->
     <string name="webview_manager">WebView Manager</string>
@@ -27,8 +27,8 @@
     <string name="understood">Understood</string>
 
     <!-- First-launch welcome dialog -->
-    <string name="welcome_title">Welcome to WebGPT</string>
-    <string name="welcome_body">This app has a hidden Settings menu where you can switch to a faster WebView (Thorium is recommended) and optimize performance.\n\nOpen it any time from Android\'s App info screen: tap the gear icon next to \"WebGPT\".\n\nNote: To download or share an image as a file, long-press it and choose \"Download/Share image\".</string>
+    <string name="welcome_title">Welcome to MyChatGPT</string>
+    <string name="welcome_body">This app has a hidden Settings menu where you can switch to a faster WebView (Thorium is recommended) and optimize performance.\n\nOpen it any time from Android\'s App info screen: tap the gear icon next to \"MyChatGPT\".\n\nNote: To download or share an image as a file, long-press it and choose \"Download/Share image\".</string>
 
     <!-- Image actions bottom sheet -->
     <string name="image_actions_title">Image</string>

@@ -1,4 +1,4 @@
-package com.webgpt.app.webview;
+package com.katsuyamaki.mychatgpt.webview;
 
 /**
  * Identifier for a downloadable WebView source. Used as the key in the

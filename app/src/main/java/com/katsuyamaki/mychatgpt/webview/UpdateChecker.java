@@ -1,4 +1,4 @@
-package com.webgpt.app.webview;
+package com.katsuyamaki.mychatgpt.webview;
 
 import android.util.Log;
 
@@ -19,15 +19,15 @@ import java.net.URL;
  * which is more reliable than doing it in-app (especially on Huawei/Xiaomi
  * devices where PackageInstaller and FileProvider-based installs crash).
  *
- * <p>Releases page: https://github.com/MrHuaweiFan/WebGPT/releases
+ * <p>Releases page: https://github.com/Katsuyamaki/MyChatGPT/releases
  */
 public final class UpdateChecker {
 
     private static final String TAG = "UpdateChecker";
 
     private static final String REPO_API =
-            "https://api.github.com/repos/MrHuaweiFan/WebGPT/releases";
-    private static final String USER_AGENT = "WebGPT-Android-Updater/6.0";
+            "https://api.github.com/repos/Katsuyamaki/MyChatGPT/releases";
+    private static final String USER_AGENT = "MyChatGPT-Android-Updater/6.0";
 
     public interface Callback {
         /**

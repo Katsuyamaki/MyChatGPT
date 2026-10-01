@@ -6,15 +6,15 @@ def myChatGPTDevKeyAlias = System.getenv("MYCHATGPT_DEV_KEY_ALIAS") ?: rootProje
 def myChatGPTDevKeyPassword = System.getenv("MYCHATGPT_DEV_KEY_PASSWORD") ?: rootProject.findProperty("MYCHATGPT_DEV_KEY_PASSWORD")
 
 android {
-    namespace 'com.webgpt.app'
+    namespace 'com.katsuyamaki.mychatgpt'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.webgpt.app"
+        applicationId "com.katsuyamaki.mychatgpt"
         minSdk 21
         targetSdk 34
-        versionCode 108
-        versionName "6.28"
+        versionCode 1
+        versionName "0.1.0"
         // AGP 8+ disables BuildConfig generation by default. We need it for
         // BuildConfig.APPLICATION_ID in Hooker.java and BuildConfig.DEBUG in
         // MainActivity.java.
@@ -27,17 +27,17 @@ android {
     // Signing config reads from env vars or ~/.gradle/gradle.properties.
     // The keystore is NEVER committed to the repo. For local builds, put the
     // following in ~/.gradle/gradle.properties (NOT the project's gradle.properties):
-    //   WEBGPT_KEYSTORE=/absolute/path/to/webgpt-release.keystore
-    //   WEBGPT_KEYSTORE_PASSWORD=<password>
-    //   WEBGPT_KEY_ALIAS=webgpt
-    //   WEBGPT_KEY_PASSWORD=<password>
+    //   MYCHATGPT_RELEASE_KEYSTORE=/absolute/path/to/mychatgpt-release.keystore
+    //   MYCHATGPT_RELEASE_KEYSTORE_PASSWORD=<password>
+    //   MYCHATGPT_RELEASE_KEY_ALIAS=webgpt
+    //   MYCHATGPT_RELEASE_KEY_PASSWORD=<password>
     // For CI builds (e.g. GitHub Actions), set the same env vars from secrets.
     signingConfigs {
         release {
-            storeFile file(System.getenv("WEBGPT_KEYSTORE") ?: (rootProject.findProperty("WEBGPT_KEYSTORE") ?: "no-keystore.p12"))
-            storePassword System.getenv("WEBGPT_KEYSTORE_PASSWORD") ?: (rootProject.findProperty("WEBGPT_KEYSTORE_PASSWORD") ?: "")
-            keyAlias System.getenv("WEBGPT_KEY_ALIAS") ?: (rootProject.findProperty("WEBGPT_KEY_ALIAS") ?: "")
-            keyPassword System.getenv("WEBGPT_KEY_PASSWORD") ?: (rootProject.findProperty("WEBGPT_KEY_PASSWORD") ?: "")
+            storeFile file(System.getenv("MYCHATGPT_RELEASE_KEYSTORE") ?: (rootProject.findProperty("MYCHATGPT_RELEASE_KEYSTORE") ?: "no-keystore.p12"))
+            storePassword System.getenv("MYCHATGPT_RELEASE_KEYSTORE_PASSWORD") ?: (rootProject.findProperty("MYCHATGPT_RELEASE_KEYSTORE_PASSWORD") ?: "")
+            keyAlias System.getenv("MYCHATGPT_RELEASE_KEY_ALIAS") ?: (rootProject.findProperty("MYCHATGPT_RELEASE_KEY_ALIAS") ?: "")
+            keyPassword System.getenv("MYCHATGPT_RELEASE_KEY_PASSWORD") ?: (rootProject.findProperty("MYCHATGPT_RELEASE_KEY_PASSWORD") ?: "")
         }
 
         if (myChatGPTDevKeystorePath

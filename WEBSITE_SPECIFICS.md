@@ -1,5 +1,12 @@
 # WEBSITE_SPECIFICS — the ChatGPT integration layer of WebGPT
 
+> **MyChatGPT fork note (2026-10-01):** This repository is derived from
+> MrHuaweiFan/WebGPT at upstream baseline `7bacdb788540ed06441087a1fa9b36ae7b4a0121`.
+> At bootstrap, the ChatGPT website contract below is intentionally unchanged;
+> MyChatGPT-specific differences are product identity/package, CI, and signing.
+> References to WebGPT below remain useful as upstream lineage/base behavior.
+>
+
 > **This file exists in every app of the WebGPT family.**
 >
 > - In **WebGPT** (the base app, this repo): it documents **everything wired to

@@ -1,4 +1,4 @@
-package com.webgpt.app.webview;
+package com.katsuyamaki.mychatgpt.webview;
 
 import android.os.IBinder;
 

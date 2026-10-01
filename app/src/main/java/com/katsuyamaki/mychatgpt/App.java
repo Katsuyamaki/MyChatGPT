@@ -1,4 +1,4 @@
-package com.webgpt.app;
+package com.katsuyamaki.mychatgpt;
 
 import android.app.Application;
 import android.content.Context;
@@ -6,9 +6,9 @@ import android.content.SharedPreferences;
 import android.util.Log;
 import android.widget.Toast;
 
-import com.webgpt.app.webview.CrashTracker;
-import com.webgpt.app.webview.Hooker;
-import com.webgpt.app.webview.WebViewUtil;
+import com.katsuyamaki.mychatgpt.webview.CrashTracker;
+import com.katsuyamaki.mychatgpt.webview.Hooker;
+import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
 
 /**
  * Application subclass.
@@ -33,7 +33,7 @@ import com.webgpt.app.webview.WebViewUtil;
  */
 public class App extends Application {
 
-    private static final String TAG = "WebGPTApp";
+    private static final String TAG = "MyChatGPTApp";
     public static final String PREFS_NAME = "webgpt_prefs";
 
     @Override

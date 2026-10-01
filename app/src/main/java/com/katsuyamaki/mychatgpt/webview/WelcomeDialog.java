@@ -1,12 +1,12 @@
-package com.webgpt.app.webview;
+package com.katsuyamaki.mychatgpt.webview;
 
 import android.app.Activity;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.SharedPreferences;
 
-import com.webgpt.app.App;
-import com.webgpt.app.R;
+import com.katsuyamaki.mychatgpt.App;
+import com.katsuyamaki.mychatgpt.R;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 /**

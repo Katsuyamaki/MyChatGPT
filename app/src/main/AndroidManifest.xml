@@ -74,7 +74,7 @@
           ActivityThread.installContentProviders).
         -->
         <provider
-            android:name="com.webgpt.app.webview.DeveloperModeContentProvider"
+            android:name="com.katsuyamaki.mychatgpt.webview.DeveloperModeContentProvider"
             android:authorities="${applicationId}.DeveloperModeContentProvider"
             android:exported="false"
             android:enabled="true" />
@@ -127,23 +127,23 @@
 
             <!-- ============ SHARE TEXT / FILES INTO WEBGPT ============ -->
 
-            <!-- Receive text shares ("Ask WebGPT" appears in the share menu
+            <!-- Receive text shares ("Ask MyChatGPT" appears in the share menu
                  when sharing text from other apps) -->
-            <intent-filter android:label="Ask WebGPT">
+            <intent-filter android:label="Ask MyChatGPT">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/*" />
             </intent-filter>
 
             <!-- Receive file shares (any file type — image, document, code, etc.) -->
-            <intent-filter android:label="Send to WebGPT">
+            <intent-filter android:label="Send to MyChatGPT">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
             </intent-filter>
 
-            <!-- "Ask WebGPT" in text selection menu (long-press text in any app) -->
-            <intent-filter android:label="Ask WebGPT">
+            <!-- "Ask MyChatGPT" in text selection menu (long-press text in any app) -->
+            <intent-filter android:label="Ask MyChatGPT">
                 <action android:name="android.intent.action.PROCESS_TEXT" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
@@ -154,7 +154,7 @@
           Trampoline for TEXT shares that were mis-launched into a foreign
           (sender's) task — see MainActivity.onCreate and ShareRelayActivity.
           Transparent: nothing flashes while it forwards the share into
-          WebGPT's own task. noHistory: self-destructs the moment it is
+          MyChatGPT's own task. noHistory: self-destructs the moment it is
           backgrounded. taskAffinity="": it owns no task of its own and can
           never spawn one. excludeFromRecents is deliberately NOT set — the
           relay lives in the SENDER's task, and that flag would hide the

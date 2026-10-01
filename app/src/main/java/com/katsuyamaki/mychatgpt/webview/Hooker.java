@@ -1,4 +1,4 @@
-package com.webgpt.app.webview;
+package com.katsuyamaki.mychatgpt.webview;
 
 import android.content.Context;
 import android.content.pm.PackageInfo;
@@ -6,7 +6,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
 import android.os.IBinder;
 
-import com.webgpt.app.BuildConfig;
+import com.katsuyamaki.mychatgpt.BuildConfig;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;

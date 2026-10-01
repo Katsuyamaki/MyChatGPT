@@ -103,7 +103,7 @@
     <!--
       ShareRelayActivity theme: fully transparent framework theme. The relay
       is a sub-second trampoline that shows nothing — the sender's UI stays
-      visible underneath while it forwards the share into WebGPT's own task.
+      visible underneath while it forwards the share into MyChatGPT's own task.
       Uses the plain platform translucent theme (not Material3) so it works
       on every API level with zero component inflation.
     -->
