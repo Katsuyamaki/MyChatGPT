@@ -1,5 +1,10 @@
 apply plugin: 'com.android.application'
 
+def myChatGPTDevKeystorePath = System.getenv("MYCHATGPT_DEV_KEYSTORE_PATH") ?: rootProject.findProperty("MYCHATGPT_DEV_KEYSTORE_PATH")
+def myChatGPTDevKeystorePassword = System.getenv("MYCHATGPT_DEV_KEYSTORE_PASSWORD") ?: rootProject.findProperty("MYCHATGPT_DEV_KEYSTORE_PASSWORD")
+def myChatGPTDevKeyAlias = System.getenv("MYCHATGPT_DEV_KEY_ALIAS") ?: rootProject.findProperty("MYCHATGPT_DEV_KEY_ALIAS")
+def myChatGPTDevKeyPassword = System.getenv("MYCHATGPT_DEV_KEY_PASSWORD") ?: rootProject.findProperty("MYCHATGPT_DEV_KEY_PASSWORD")
+
 android {
     namespace 'com.webgpt.app'
     compileSdk 34
@@ -34,6 +39,18 @@ android {
             keyAlias System.getenv("WEBGPT_KEY_ALIAS") ?: (rootProject.findProperty("WEBGPT_KEY_ALIAS") ?: "")
             keyPassword System.getenv("WEBGPT_KEY_PASSWORD") ?: (rootProject.findProperty("WEBGPT_KEY_PASSWORD") ?: "")
         }
+
+        if (myChatGPTDevKeystorePath
+                && myChatGPTDevKeystorePassword
+                && myChatGPTDevKeyAlias
+                && myChatGPTDevKeyPassword) {
+            mychatgptDev {
+                storeFile file(myChatGPTDevKeystorePath)
+                storePassword myChatGPTDevKeystorePassword
+                keyAlias myChatGPTDevKeyAlias
+                keyPassword myChatGPTDevKeyPassword
+            }
+        }
     }
 
     buildTypes {
@@ -45,7 +62,9 @@ android {
             buildConfigField "boolean", "EXPERIMENTAL", "false"
         }
         debug {
-            signingConfig signingConfigs.debug
+            if (signingConfigs.findByName("mychatgptDev") != null) {
+                signingConfig signingConfigs.mychatgptDev
+            }
             // v6.24.31: debuggable=false — a debuggable APK is JIT-only and
             // never AOT-compiled, which slowed the whole UI thread in every
             // experimental so far (part of the "slower than Chrome"

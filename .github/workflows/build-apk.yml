@@ -51,8 +51,29 @@ jobs:
       - name: Grant Gradle wrapper execute permission
         run: chmod +x ./gradlew
 
+      - name: Restore MyChatGPT dev keystore
+        shell: bash
+        env:
+          MYCHATGPT_DEV_KEYSTORE_B64: ${{ secrets.MYCHATGPT_DEV_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          : "${MYCHATGPT_DEV_KEYSTORE_B64:?missing MYCHATGPT_DEV_KEYSTORE_B64}"
+          printf '%s' "$MYCHATGPT_DEV_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/mychatgpt-dev.jks"
+          chmod 600 "$RUNNER_TEMP/mychatgpt-dev.jks"
+
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+        shell: bash
+        env:
+          MYCHATGPT_DEV_KEYSTORE_PATH: ${{ runner.temp }}/mychatgpt-dev.jks
+          MYCHATGPT_DEV_KEYSTORE_PASSWORD: ${{ secrets.MYCHATGPT_DEV_KEYSTORE_PASSWORD }}
+          MYCHATGPT_DEV_KEY_ALIAS: ${{ secrets.MYCHATGPT_DEV_KEY_ALIAS }}
+          MYCHATGPT_DEV_KEY_PASSWORD: ${{ secrets.MYCHATGPT_DEV_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${MYCHATGPT_DEV_KEYSTORE_PASSWORD:?missing MYCHATGPT_DEV_KEYSTORE_PASSWORD}"
+          : "${MYCHATGPT_DEV_KEY_ALIAS:?missing MYCHATGPT_DEV_KEY_ALIAS}"
+          : "${MYCHATGPT_DEV_KEY_PASSWORD:?missing MYCHATGPT_DEV_KEY_PASSWORD}"
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
       - name: Verify and stage APK
         shell: bash
@@ -60,6 +81,7 @@ jobs:
           set -euo pipefail
           source_apk="app/build/outputs/apk/debug/app-debug.apk"
           test -s "$source_apk"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$source_apk"
           mkdir -p "$RUNNER_TEMP/mychatgpt-artifacts"
           cp "$source_apk" "$RUNNER_TEMP/mychatgpt-artifacts/MyChatGPT-dev-debug.apk"
           ls -lh "$RUNNER_TEMP/mychatgpt-artifacts/MyChatGPT-dev-debug.apk"
