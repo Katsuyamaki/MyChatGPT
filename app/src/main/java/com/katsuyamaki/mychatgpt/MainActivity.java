@@ -36,7 +36,6 @@ import android.view.animation.AnimationUtils;
 import android.view.animation.LinearInterpolator;
 import android.webkit.CookieManager;
 import android.webkit.ConsoleMessage;
-import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -58,6 +57,7 @@ import com.katsuyamaki.mychatgpt.webview.CrashTracker;
 import com.katsuyamaki.mychatgpt.webview.MainWebViewController;
 import com.katsuyamaki.mychatgpt.webview.PopupAuthController;
 import com.katsuyamaki.mychatgpt.webview.TransferController;
+import com.katsuyamaki.mychatgpt.webview.WebBridgeController;
 import com.katsuyamaki.mychatgpt.webview.WebViewManagerDialog;
 import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
 import com.katsuyamaki.mychatgpt.webview.WelcomeDialog;
@@ -288,7 +288,7 @@ public class MainActivity extends Activity {
 
                     @Override
                     public Object createJavascriptBridge(WebView popup) {
-                        return new WebAppInterface(MainActivity.this, popup);
+                        return createWebBridge(popup);
                     }
 
                     @Override
@@ -451,6 +451,24 @@ public class MainActivity extends Activity {
         }
     }
 
+    private WebBridgeController createWebBridge(WebView hostWebView) {
+        return new WebBridgeController(
+                this,
+                hostWebView,
+                transferController,
+                new WebBridgeController.Host() {
+                    @Override
+                    public WebView getMainWebView() {
+                        return webview;
+                    }
+
+                    @Override
+                    public void onPageReady() {
+                        onDomReady();
+                    }
+                });
+    }
+
     /** Wire up the main WebView (the initial instance from the layout, or a
      *  fresh one after a renderer crash). */
     private void setupMainWebView(WebView mainWebView) {
@@ -458,7 +476,7 @@ public class MainActivity extends Activity {
         mainWebViewController.configureMainWebView(
                 mainWebView,
                 backgroundColor,
-                new WebAppInterface(this, mainWebView),
+                createWebBridge(mainWebView),
                 "AndroidBridge");
         setupClients(mainWebView);
         transferController.setupDownloads(mainWebView);
@@ -576,173 +594,6 @@ public class MainActivity extends Activity {
             decor.setSystemUiVisibility(vis);
         } catch (Throwable t) {
             Log.e(TAG, "applySystemBarColors failed", t);
-        }
-    }
-
-    /**
-     * JS interface exposed to the wrapped site's JavaScript.
-     */
-    public static class WebAppInterface {
-        private final MainActivity activity;
-        private final WebView hostWebView;
-
-        WebAppInterface(MainActivity activity, WebView hostWebView) {
-            this.activity = activity;
-            this.hostWebView = hostWebView;
-        }
-
-        /**
-         * Origin gate: the bridge only serves pages hosted on our allowlisted
-         * domains. POPUP WebViews (share menus, blob:/about:blank windows)
-         * inherit trust from the main WebView — in this app popups are only
-         * ever spawned by an allowlisted page (onCreateWindow), so a popup
-         * with a blank/blob URL is still "ours". Without this, the site's
-         * share menu (opened in a popup) was silently rejected right after
-         * the "share called" toast.
-         */
-        private boolean hostAllowed() {
-            try {
-                if (urlAllowed(hostWebView.getUrl())) return true;
-                WebView main = activity.webview;
-                if (main != null && main != hostWebView && urlAllowed(main.getUrl())) {
-                    return true;  // popup spawned by an allowlisted page
-                }
-                debugLog("bridge blocked: " + hostWebView.getUrl());
-                return false;
-            } catch (Throwable t) {
-                return false;
-            }
-        }
-
-        private static boolean urlAllowed(String url) {
-            return ChatGptSiteContract.isAllowedWebUrl(url);
-        }
-
-        /**
-         * Called by the ChatGptSiteContract.PAGE_READY_WATCHER_JS poller when the DOM signals
-         * that the SPA is REALLY rendered (composer + late-appearing splash
-         * markers, a restored conversation, or the settle heuristic).
-         * Drives the loading overlay off the screen the instant the page is
-         * usable instead of waiting for onPageFinished + a blind delay.
-         */
-        @JavascriptInterface
-        public void pageReady() {
-            if (!hostAllowed()) return;  // origin gate
-            activity.runOnUiThread(() -> activity.onDomReady());
-        }
-
-        /**
-         * Called by the navigator.share({ text }) JS override.
-         * Copies to the system clipboard SILENTLY (no toast) —
-         * The site shows its own "Copied!" feedback in the UI.
-         */
-        @JavascriptInterface
-        public void copyToClipboard(final String text) {
-            if (!hostAllowed()) return;  // origin gate
-            activity.runOnUiThread(() -> {
-                try {
-                    android.content.ClipboardManager clipboard =
-                            (android.content.ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
-                    if (clipboard != null) {
-                        android.content.ClipData clip =
-                                android.content.ClipData.newPlainText("MyChatGPT", text);
-                        clipboard.setPrimaryClip(clip);
-                        Log.i("MyChatGPTApp", "Text copied to clipboard via JS override");
-                    }
-                } catch (Exception e) {
-                    Log.e("MyChatGPTApp", "copyToClipboard (JS) failed", e);
-                }
-            });
-        }
-
-        /**
-         * navigator.share({ text, url }) — open the real system share sheet.
-         * UNGATED by design: the system share sheet itself is the consent UI
-         * (the user reviews the content before anything leaves the device),
-         * so an origin gate adds no security here — and it broke sharing
-         * from the site's share popup, whose own URL is blob:/about:blank.
-         */
-        @JavascriptInterface
-        public void shareText(final String text, final String url) {
-            debugLog("shareText invoked");
-            activity.runOnUiThread(() -> activity.transferController.shareTextNative(text, url));
-        }
-
-        /**
-         * navigator.share({ files: [File] }) — decode the data URL and hand
-         * the file to the system share sheet via FileProvider.
-         */
-        /** navigator.share({ files }) — UNGATED (system sheet = consent UI). */
-        @JavascriptInterface
-        public void shareFile(final String title, final String dataUrl,
-                              final String fileName, final String mime) {
-            debugLog("shareFile invoked: " + fileName);
-            activity.runOnUiThread(() -> activity.transferController.shareFileNative(title, dataUrl, fileName, mime));
-        }
-
-        /**
-         * Blob-download callback: the injected fetch/FileReader snippet hands
-         * the payload back as a data-URL string. Replaces the old
-         * window.__blobResult polling, which capped downloads at 2 seconds.
-         */
-        @JavascriptInterface
-        public void onBlobResult(final String dataUrl) {
-            if (!hostAllowed()) return;
-            activity.runOnUiThread(() -> activity.transferController.handleBlobResult(dataUrl));
-        }
-
-        /** Blob-download callback: the in-page fetch or read failed. */
-        @JavascriptInterface
-        public void onBlobFailed() {
-            activity.runOnUiThread(() -> activity.transferController.handleBlobFailed());
-        }
-
-        /**
-         * Direct blob-download path: fired by the anchor-click hook in
-         * injectAllOverrides() while the blob URL is still alive. Carries the
-         * suggested filename plus the full data-URL payload.
-         */
-        @JavascriptInterface
-        public void onBlobDownload(final String name, final String dataUrl) {
-            if (!hostAllowed()) return;
-            activity.runOnUiThread(() -> activity.transferController.handleBlobDownload(name, dataUrl));
-        }
-
-        /**
-         * Chunked blob transfer: large exports (PDF etc.) are delivered in
-         * 256KB base64 pieces to stay clear of any JS-to-Java bridge string
-         * limits. @JavascriptInterface calls are synchronous from JS, so the
-         * chunks arrive in order; the final chunk (index == total-1)
-         * assembles and saves the file.
-         */
-        @JavascriptInterface
-        public void onBlobChunk(final String name, final String mime, final int index,
-                                final int total, final String data) {
-            activity.transferController.onBlobChunk(name, mime, index, total, data);
-        }
-
-        /**
-         * Debug telemetry (debug builds only): a visible toast reporting
-         * which page APIs the site actually exercises (share, window.open,
-         * blob downloads). Invaluable when diagnosing site features that
-         * misbehave inside a WebView — no adb needed.
-         */
-        @JavascriptInterface
-        public void debugLog(final String msg) {
-            // Site-side diagnostic channel — logcat only (experimental
-            // builds). Never toasts on screen: every Toast.show() is a
-            // synchronous binder round-trip on the UI thread (the
-            // v6.24.31 navigation-hot-path regression).
-            if (BuildConfig.EXPERIMENTAL) {
-                Log.d(TAG, "bridge: " + msg);
-            }
-        }
-
-        /** Drop-injection result (functional, not debug): clears the manual
-         *  fallback on success, prompts the user on failure. */
-        @JavascriptInterface
-        public void onFileDropResult(final boolean ok, final String detail) {
-            activity.runOnUiThread(() -> activity.transferController.handleFileDropResult(ok, detail));
         }
     }
 
