@@ -566,4 +566,161 @@ public final class ChatGptSiteContract {
         }
         return false;
     }
+
+    // Java-side polling / attachment timings inherited from WebGPT's
+    // ChatGPT-specific integration. Keep these together with the selectors
+    // and injected scripts so site tuning does not leak back into Activity.
+    public static final int COMPOSER_READY_MAX_WAIT_MS = 25000;
+    public static final int COMPOSER_READY_POLL_MS = 700;
+    public static final int PAGE_FINISHED_READY_FALLBACK_MS = 3500;
+    public static final int FILE_CHOOSER_RETRIGGER_GUARD_MS = 4000;
+    public static final int FILE_INJECTION_BASE64_CHUNK_SIZE = 524288;
+    public static final int ATTACHMENT_VERIFY_DELAY_MS = 3000;
+    public static final int BLOB_DOWNLOAD_TIMEOUT_MS = 30000;
+
+    public static final int AUTO_ATTACH_FOCUS_DELAY_1_MS = 200;
+    public static final int AUTO_ATTACH_FOCUS_DELAY_2_MS = 500;
+    public static final int AUTO_ATTACH_FOCUS_DELAY_3_MS = 900;
+    public static final int AUTO_ATTACH_FOCUS_DELAY_4_MS = 1400;
+
+    public static final int DROP_REFOCUS_DELAY_1_MS = 500;
+    public static final int DROP_REFOCUS_DELAY_2_MS = 1500;
+    public static final int DROP_REFOCUS_DELAY_3_MS = 2500;
+    public static final int DROP_KEYBOARD_DELAY_1_MS = 800;
+    public static final int DROP_KEYBOARD_DELAY_2_MS = 2000;
+
+    public static final String COMPOSER_READY_PROBE_JS =
+"(function(){"
+                            + "var el=!!(document.querySelector('#prompt-textarea')"
+                            + "||document.querySelector('div[contenteditable=\"true\"][role=\"textbox\"]')"
+                            + "||document.querySelector('div[contenteditable=\"true\"]')"
+                            + "||document.querySelector('textarea[placeholder]'));"
+                            + "var hEl=document.querySelector('[data-splash-headline-option]');"
+                            + "var cEl=document.querySelector('[data-testid=\"use-case-prompt-chips\"] button');"
+                            + "function vis(e){try{var r=e&&e.getClientRects();return !!(r&&r.length&&r[0].height>0&&r[0].width>0)}catch(x){return false}}"
+                            + "var mk=!!((hEl&&vis(hEl))||(cEl&&vis(cEl)));"
+                            + "var L=window.__webgptLoad;"
+                            + "if(!L) return el;"
+                            + "var now=Date.now();"
+                            + "var domAge=now-L.lastMut, netAge=now-L.lastStart;"
+                            + "return (el && (mk || (domAge>2000 && netAge>1500)))"
+                            + " ? 'ready|'+domAge+'|'+netAge : 'wait|'+domAge+'|'+netAge;"
+                            + "})();";
+
+    public static final String FILE_BUFFER_RESET_JS = "window.__webgptFileB64='';";
+
+    public static String appendFileBufferJs(String chunk) {
+        return "(function(){window.__webgptFileB64=(window.__webgptFileB64||'')+'" + chunk + "';})();";
+    }
+
+    public static String buildFileDropJs(String safeName, String safeMime) {
+        return "(function(){" +
+                "  try {" +
+                "    window.__webgptShareActiveUntil = Date.now() + 6000;" +
+                "    var b64 = window.__webgptFileB64 || '';" +
+                "    window.__webgptFileB64 = null;" +
+                "    var AB = window.AndroidBridge;" +
+                "    if (!b64) { if (AB && AB.onFileDropResult) AB.onFileDropResult(false, 'no data'); return; }" +
+                "    var bin = atob(b64);" +
+                "    var n = bin.length;" +
+                "    var bytes = new Uint8Array(n);" +
+                "    for (var i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);" +
+                "    var file = new File([bytes], '" + safeName + "', {type: '" + safeMime + "'});" +
+                "    var dt = new DataTransfer();" +
+                "    dt.items.add(file);" +
+                "    var el = document.querySelector('#prompt-textarea')" +
+                "          || document.querySelector('div[contenteditable=\"true\"][role=\"textbox\"]')" +
+                "          || document.querySelector('div[contenteditable=\"true\"]')" +
+                "          || document.querySelector('textarea[placeholder]');" +
+                "    var input = null;" +
+                "    try {" +
+                "      var ins = document.querySelectorAll('input[type=file]');" +
+                "      for (var i = 0; i < ins.length; i++) { input = ins[i]; break; }" +
+                "    } catch (e) {}" +
+                "    if (input) {" +
+                "      try { input.files = dt.files; } catch (e) { try { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'files').set.call(input, dt.files); } catch (e2) {} }" +
+                "      try { input.dispatchEvent(new Event('input', {bubbles: true})); } catch (e) {}" +
+                "      try { input.dispatchEvent(new Event('change', {bubbles: true})); } catch (e) {}" +
+                "      if (el) { try { el.focus({preventScroll: true}); } catch (e) {} }" +
+                "      if (AB && AB.onFileDropResult) AB.onFileDropResult(true, 'input ' + n + ' bytes');" +
+                "      return;" +
+                "    }" +
+                "    if (!el) { if (AB && AB.onFileDropResult) AB.onFileDropResult(false, 'no composer'); return; }" +
+                /* FALLBACK — drag events (only when no file input exists).
+                 * Synthetic dragenter/dragover can leave the site's drop
+                 * overlay stuck, so fire document drop/dragend/dragleave and
+                 * a page-level Escape afterwards to tear it down. */
+                "    try { el.dispatchEvent(new DragEvent('dragenter', {bubbles: true, cancelable: true, dataTransfer: dt})); } catch (e) {}" +
+                "    try { el.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer: dt})); } catch (e) {}" +
+                "    try { el.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt})); } catch (e) {}" +
+                "    try { document.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt})); } catch (e) {}" +
+                "    try { document.dispatchEvent(new DragEvent('dragend', {bubbles: true, cancelable: true})); } catch (e) {}" +
+                "    try { document.dispatchEvent(new DragEvent('dragleave', {bubbles: true, cancelable: true})); } catch (e) {}" +
+                "    try { el.focus({preventScroll: true}); } catch (e) {}" +
+                "    setTimeout(function(){" +
+                "      try { document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true})); } catch (e) {}" +
+                "      try { document.dispatchEvent(new KeyboardEvent('keyup', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true})); } catch (e) {}" +
+                "      try { el.focus({preventScroll: true}); } catch (e) {}" +
+                "    }, 350);" +
+                "    if (AB && AB.onFileDropResult) AB.onFileDropResult(true, 'dropped ' + n + ' bytes');" +
+                "  } catch (e) {" +
+                "    try { var AB2 = window.AndroidBridge; if (AB2 && AB2.onFileDropResult) AB2.onFileDropResult(false, String(e)); } catch (e2) {}" +
+                "  }" +
+                "})();";
+    }
+
+    public static String buildAttachmentVisibilityJs(String jsName) {
+        return "(function(){"
+                + "var name='" + jsName + "';"
+                + "var nodes=document.querySelectorAll('[data-testid*=attachment i],[class*=attachment i],[aria-label*=file i],div,span,button');"
+                + "for(var i=0;i<nodes.length;i++){"
+                + "  var t=((nodes[i].textContent||'')+' '+(nodes[i].getAttribute('aria-label')||''));"
+                + "  if(t.indexOf(name)>=0 && t.length<300) return 'visible';"
+                + "}"
+                + "return 'gone';"
+                + "})();";
+    }
+
+    public static String buildBlobFetchJs(String blobUrl) {
+        return "(function(){" +
+                "  function fail(){ try { window.AndroidBridge && AndroidBridge.onBlobFailed && AndroidBridge.onBlobFailed(); } catch(e) {} }" +
+                "  try {" +
+                "    fetch('" + blobUrl.replace("'", "\\'") + "')" +
+                "      .then(function(r){ return r.blob(); })" +
+                "      .then(function(b){" +
+                "        var fr = new FileReader();" +
+                "        fr.onloadend = function(){" +
+                "          try {" +
+                "            if (window.AndroidBridge && AndroidBridge.onBlobResult) { AndroidBridge.onBlobResult(String(fr.result)); }" +
+                "            else { fail(); }" +
+                "          } catch(e) { fail(); }" +
+                "        };" +
+                "        fr.onerror = fail;" +
+                "        fr.readAsDataURL(b);" +
+                "      })" +
+                "      .catch(fail);" +
+                "  } catch(e) { fail(); }" +
+                "})();";
+    }
+
+    public static final String MARK_SHARE_ACTIVE_JS =
+            "try{window.__webgptShareActiveUntil=Date.now()+6000;}catch(e){}";
+
+    public static final String COMPOSER_FOCUS_JS =
+"(function(){" +
+                "  try {" +
+                "    window.__webgptShareActiveUntil = Date.now() + 6000;" +
+                "    var el = document.querySelector('#prompt-textarea')" +
+                "          || document.querySelector('div[contenteditable=\"true\"][role=\"textbox\"]')" +
+                "          || document.querySelector('div[contenteditable=\"true\"]')" +
+                "          || document.querySelector('textarea[placeholder]');" +
+                "    var AB = window.AndroidBridge;" +
+                "    if (!el) { try { if (AB && AB.debugLog) AB.debugLog('composer NOT FOUND'); } catch (e) {} return; }" +
+                "    try { if (AB && AB.debugLog) AB.debugLog('composer focus: ' + (el.id || el.getAttribute('data-testid') || el.tagName)); } catch (e) {}" +
+                "    try { el.focus({preventScroll: true}); } catch (e) { try { el.focus(); } catch (e2) {} }" +
+                "    try { el.dispatchEvent(new Event('focus', {bubbles: true})); } catch (e) {}" +
+                "    try { el.dispatchEvent(new Event('focusin', {bubbles: true})); } catch (e) {}" +
+                "  } catch (e) {}" +
+                "})();";
+
 }

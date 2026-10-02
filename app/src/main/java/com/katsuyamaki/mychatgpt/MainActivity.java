@@ -636,7 +636,7 @@ public class MainActivity extends Activity {
                     if (initialLoadComplete && webview != null) {
                         if (fileB64 != null) {
                             // Page already loaded — wait for it to go quiet.
-                            waitForComposerReady(25000, this::runFileDropSequence);
+                            waitForComposerReady(ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS, this::runFileDropSequence);
                         } else {
                             // File too large to inject — manual path only.
                         }
@@ -1363,7 +1363,7 @@ public class MainActivity extends Activity {
                 webview.postDelayed(() -> {
                     if (loadingOverlay == null || initialLoadComplete) return;
                     hideLoadingOverlayNow();
-                }, 3500);
+                }, ChatGptSiteContract.PAGE_FINISHED_READY_FALLBACK_MS);
             }
 
         });
@@ -1512,7 +1512,7 @@ public class MainActivity extends Activity {
         // for the REAL composer, then inject via drop events.
         if (pendingAutoAttach && pendingFileB64 != null) {
             pendingAutoAttach = false;
-            waitForComposerReady(25000, MainActivity.this::runFileDropSequence);
+            waitForComposerReady(ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS, MainActivity.this::runFileDropSequence);
         } else if (pendingAutoAttach) {
             pendingAutoAttach = false;  // no injectable payload — manual path
         }
@@ -1520,7 +1520,7 @@ public class MainActivity extends Activity {
         // for the REAL composer, then focus it + open the keyboard.
         if (pendingAutoFocusText) {
             pendingAutoFocusText = false;
-            waitForComposerReady(25000, MainActivity.this::settleComposerAfterAutoAttach);
+            waitForComposerReady(ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS, MainActivity.this::settleComposerAfterAutoAttach);
         }
     }
 
@@ -1553,22 +1553,7 @@ public class MainActivity extends Activity {
         tick[0] = () -> {
             if (webview == null || isFinishing()) return;
             webview.evaluateJavascript(
-                    "(function(){"
-                            + "var el=!!(document.querySelector('#prompt-textarea')"
-                            + "||document.querySelector('div[contenteditable=\"true\"][role=\"textbox\"]')"
-                            + "||document.querySelector('div[contenteditable=\"true\"]')"
-                            + "||document.querySelector('textarea[placeholder]'));"
-                            + "var hEl=document.querySelector('[data-splash-headline-option]');"
-                            + "var cEl=document.querySelector('[data-testid=\"use-case-prompt-chips\"] button');"
-                            + "function vis(e){try{var r=e&&e.getClientRects();return !!(r&&r.length&&r[0].height>0&&r[0].width>0)}catch(x){return false}}"
-                            + "var mk=!!((hEl&&vis(hEl))||(cEl&&vis(cEl)));"
-                            + "var L=window.__webgptLoad;"
-                            + "if(!L) return el;"
-                            + "var now=Date.now();"
-                            + "var domAge=now-L.lastMut, netAge=now-L.lastStart;"
-                            + "return (el && (mk || (domAge>2000 && netAge>1500)))"
-                            + " ? 'ready|'+domAge+'|'+netAge : 'wait|'+domAge+'|'+netAge;"
-                            + "})();",
+                    ChatGptSiteContract.COMPOSER_READY_PROBE_JS,
                     res -> {
                         // evaluateJavascript delivers strings JSON-quoted:
                         // strip the surrounding quotes before parsing.
@@ -1579,7 +1564,7 @@ public class MainActivity extends Activity {
                         if (sig.startsWith("ready")) {
                             action.run();
                         } else if (SystemClock.elapsedRealtime() < deadline) {
-                            webview.postDelayed(tick[0], 700);
+                            webview.postDelayed(tick[0], ChatGptSiteContract.COMPOSER_READY_POLL_MS);
                         } else {
                             action.run();
                         }
@@ -1615,13 +1600,13 @@ public class MainActivity extends Activity {
         if (webview == null || isFinishing() || b64 == null || name == null) return;
         pendingFileB64 = null;  // consumed
 
-        webview.evaluateJavascript("window.__webgptFileB64='';", null);
-        final int CH = 524288;  // 512KB base64 chunks
+        webview.evaluateJavascript(ChatGptSiteContract.FILE_BUFFER_RESET_JS, null);
+        final int CH = ChatGptSiteContract.FILE_INJECTION_BASE64_CHUNK_SIZE;  // 512KB base64 chunks
         for (int i = 0; i < b64.length(); i += CH) {
             final String chunk = b64.substring(i, Math.min(i + CH, b64.length()));
             // base64 alphabet is JS-string-safe — no escaping needed
             webview.evaluateJavascript(
-                    "(function(){window.__webgptFileB64=(window.__webgptFileB64||'')+'" + chunk + "';})();",
+                    ChatGptSiteContract.appendFileBufferJs(chunk),
                     null);
         }
 
@@ -1637,70 +1622,18 @@ public class MainActivity extends Activity {
          * site's own attach handler with ZERO drag events — which means the
          * full-screen drop overlay (triggered by synthetic dragenter/dragover
          * in earlier builds, with no reliable teardown) is never shown. */
-        String dropJs = "(function(){" +
-                "  try {" +
-                "    window.__webgptShareActiveUntil = Date.now() + 6000;" +
-                "    var b64 = window.__webgptFileB64 || '';" +
-                "    window.__webgptFileB64 = null;" +
-                "    var AB = window.AndroidBridge;" +
-                "    if (!b64) { if (AB && AB.onFileDropResult) AB.onFileDropResult(false, 'no data'); return; }" +
-                "    var bin = atob(b64);" +
-                "    var n = bin.length;" +
-                "    var bytes = new Uint8Array(n);" +
-                "    for (var i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);" +
-                "    var file = new File([bytes], '" + safeName + "', {type: '" + safeMime + "'});" +
-                "    var dt = new DataTransfer();" +
-                "    dt.items.add(file);" +
-                "    var el = document.querySelector('#prompt-textarea')" +
-                "          || document.querySelector('div[contenteditable=\"true\"][role=\"textbox\"]')" +
-                "          || document.querySelector('div[contenteditable=\"true\"]')" +
-                "          || document.querySelector('textarea[placeholder]');" +
-                "    var input = null;" +
-                "    try {" +
-                "      var ins = document.querySelectorAll('input[type=file]');" +
-                "      for (var i = 0; i < ins.length; i++) { input = ins[i]; break; }" +
-                "    } catch (e) {}" +
-                "    if (input) {" +
-                "      try { input.files = dt.files; } catch (e) { try { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'files').set.call(input, dt.files); } catch (e2) {} }" +
-                "      try { input.dispatchEvent(new Event('input', {bubbles: true})); } catch (e) {}" +
-                "      try { input.dispatchEvent(new Event('change', {bubbles: true})); } catch (e) {}" +
-                "      if (el) { try { el.focus({preventScroll: true}); } catch (e) {} }" +
-                "      if (AB && AB.onFileDropResult) AB.onFileDropResult(true, 'input ' + n + ' bytes');" +
-                "      return;" +
-                "    }" +
-                "    if (!el) { if (AB && AB.onFileDropResult) AB.onFileDropResult(false, 'no composer'); return; }" +
-                /* FALLBACK — drag events (only when no file input exists).
-                 * Synthetic dragenter/dragover can leave the site's drop
-                 * overlay stuck, so fire document drop/dragend/dragleave and
-                 * a page-level Escape afterwards to tear it down. */
-                "    try { el.dispatchEvent(new DragEvent('dragenter', {bubbles: true, cancelable: true, dataTransfer: dt})); } catch (e) {}" +
-                "    try { el.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer: dt})); } catch (e) {}" +
-                "    try { el.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt})); } catch (e) {}" +
-                "    try { document.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer: dt})); } catch (e) {}" +
-                "    try { document.dispatchEvent(new DragEvent('dragend', {bubbles: true, cancelable: true})); } catch (e) {}" +
-                "    try { document.dispatchEvent(new DragEvent('dragleave', {bubbles: true, cancelable: true})); } catch (e) {}" +
-                "    try { el.focus({preventScroll: true}); } catch (e) {}" +
-                "    setTimeout(function(){" +
-                "      try { document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true})); } catch (e) {}" +
-                "      try { document.dispatchEvent(new KeyboardEvent('keyup', {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true})); } catch (e) {}" +
-                "      try { el.focus({preventScroll: true}); } catch (e) {}" +
-                "    }, 350);" +
-                "    if (AB && AB.onFileDropResult) AB.onFileDropResult(true, 'dropped ' + n + ' bytes');" +
-                "  } catch (e) {" +
-                "    try { var AB2 = window.AndroidBridge; if (AB2 && AB2.onFileDropResult) AB2.onFileDropResult(false, String(e)); } catch (e2) {}" +
-                "  }" +
-                "})();";
+        String dropJs = ChatGptSiteContract.buildFileDropJs(safeName, safeMime);
         webview.evaluateJavascript(dropJs, null);
 
         // Re-assert focus + keyboard AFTER the drop lands: the SPA can still
         // run a late hydration pass that steals focus; several staggered
         // re-assertions keep the composer focused (and the attachment
         // committed) through it.
-        webview.postDelayed(this::settleComposerAfterAutoAttach, 500);
-        webview.postDelayed(this::settleComposerAfterAutoAttach, 1500);
-        webview.postDelayed(this::settleComposerAfterAutoAttach, 2500);
-        webview.postDelayed(this::showKeyboardForComposer, 800);
-        webview.postDelayed(this::showKeyboardForComposer, 2000);
+        webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.DROP_REFOCUS_DELAY_1_MS);
+        webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.DROP_REFOCUS_DELAY_2_MS);
+        webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.DROP_REFOCUS_DELAY_3_MS);
+        webview.postDelayed(this::showKeyboardForComposer, ChatGptSiteContract.DROP_KEYBOARD_DELAY_1_MS);
+        webview.postDelayed(this::showKeyboardForComposer, ChatGptSiteContract.DROP_KEYBOARD_DELAY_2_MS);
     }
 
     /** Bridge callback: the page accepted (or rejected) the injected drop. */
@@ -1714,7 +1647,7 @@ public class MainActivity extends Activity {
             // composer (catches the site discarding it — e.g. an attach-limit
             // rejection — right after accepting it).
             final String checkName = pendingFileName;
-            webview.postDelayed(() -> verifyAttachmentVisible(checkName), 3000);
+            webview.postDelayed(() -> verifyAttachmentVisible(checkName), ChatGptSiteContract.ATTACHMENT_VERIFY_DELAY_MS);
         } else if (pendingShareFileUri != null) {
             Toast.makeText(this,
                     "Couldn't attach automatically — tap + and choose Files",
@@ -1727,15 +1660,7 @@ public class MainActivity extends Activity {
         WebView wv = webview;
         if (wv == null || isFinishing() || name == null) return;
         final String jsName = name.replace("\\", "_").replace("'", "\\'");
-        String js = "(function(){"
-                + "var name='" + jsName + "';"
-                + "var nodes=document.querySelectorAll('[data-testid*=attachment i],[class*=attachment i],[aria-label*=file i],div,span,button');"
-                + "for(var i=0;i<nodes.length;i++){"
-                + "  var t=((nodes[i].textContent||'')+' '+(nodes[i].getAttribute('aria-label')||''));"
-                + "  if(t.indexOf(name)>=0 && t.length<300) return 'visible';"
-                + "}"
-                + "return 'gone';"
-                + "})();";
+        String js = ChatGptSiteContract.buildAttachmentVisibilityJs(jsName);
         wv.evaluateJavascript(js, res -> {
             String r = res == null ? "" : res;
             if (r.length() >= 2 && r.startsWith("\"") && r.endsWith("\"")) {
@@ -2003,25 +1928,7 @@ public class MainActivity extends Activity {
         pendingBlobFilename = filename;
         pendingBlobMime = finalMime;
         blobDownloadInFlight = true;
-        String js = "(function(){" +
-                "  function fail(){ try { window.AndroidBridge && AndroidBridge.onBlobFailed && AndroidBridge.onBlobFailed(); } catch(e) {} }" +
-                "  try {" +
-                "    fetch('" + blobUrl.replace("'", "\\'") + "')" +
-                "      .then(function(r){ return r.blob(); })" +
-                "      .then(function(b){" +
-                "        var fr = new FileReader();" +
-                "        fr.onloadend = function(){" +
-                "          try {" +
-                "            if (window.AndroidBridge && AndroidBridge.onBlobResult) { AndroidBridge.onBlobResult(String(fr.result)); }" +
-                "            else { fail(); }" +
-                "          } catch(e) { fail(); }" +
-                "        };" +
-                "        fr.onerror = fail;" +
-                "        fr.readAsDataURL(b);" +
-                "      })" +
-                "      .catch(fail);" +
-                "  } catch(e) { fail(); }" +
-                "})();";
+        String js = ChatGptSiteContract.buildBlobFetchJs(blobUrl);
         webView.evaluateJavascript(js, null);
         // Safety net: if the bridge never answers (page navigated away,
         // renderer killed, ...) give up quietly after 30 seconds.
@@ -2034,7 +1941,7 @@ public class MainActivity extends Activity {
                         "Download did not complete. Hold down on the image to open the share & download menu.",
                         Toast.LENGTH_LONG).show();
             }
-        }, 30000);
+        }, ChatGptSiteContract.BLOB_DOWNLOAD_TIMEOUT_MS);
     }
 
     /** Called by WebAppInterface.onBlobResult with a data-URL payload. */
@@ -2835,7 +2742,7 @@ public class MainActivity extends Activity {
         // again double-attaches it (which trips ChatGPT's attach limit and
         // makes the attachment disappear).
         if (pendingShareFileUri != null
-                && SystemClock.elapsedRealtime() - lastFileInjectionAt < 4000) {
+                && SystemClock.elapsedRealtime() - lastFileInjectionAt < ChatGptSiteContract.FILE_CHOOSER_RETRIGGER_GUARD_MS) {
             Log.i(TAG, "ignoring site re-trigger after injection");
             filePathCallback.onReceiveValue(null);
             filePathCallback = null;
@@ -2852,10 +2759,10 @@ public class MainActivity extends Activity {
             // silently drops the file about a second later (users had to tap
             // the text box within that window). Focus the composer
             // programmatically, several times, inside that window.
-            webview.postDelayed(this::settleComposerAfterAutoAttach, 200);
-            webview.postDelayed(this::settleComposerAfterAutoAttach, 500);
-            webview.postDelayed(this::settleComposerAfterAutoAttach, 900);
-            webview.postDelayed(this::settleComposerAfterAutoAttach, 1400);
+            webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_1_MS);
+            webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_2_MS);
+            webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_3_MS);
+            webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_4_MS);
             return true;
         }
 
@@ -2955,7 +2862,7 @@ public class MainActivity extends Activity {
     private void markShareActive() {
         WebView wv = webview;
         if (wv == null || isFinishing()) return;
-        wv.evaluateJavascript("try{window.__webgptShareActiveUntil=Date.now()+6000;}catch(e){}", null);
+        wv.evaluateJavascript(ChatGptSiteContract.MARK_SHARE_ACTIVE_JS, null);
     }
 
     /**
@@ -2969,21 +2876,7 @@ public class MainActivity extends Activity {
     private void settleComposerAfterAutoAttach() {
         WebView wv = webview;
         if (wv == null || isFinishing()) return;
-        String js = "(function(){" +
-                "  try {" +
-                "    window.__webgptShareActiveUntil = Date.now() + 6000;" +
-                "    var el = document.querySelector('#prompt-textarea')" +
-                "          || document.querySelector('div[contenteditable=\"true\"][role=\"textbox\"]')" +
-                "          || document.querySelector('div[contenteditable=\"true\"]')" +
-                "          || document.querySelector('textarea[placeholder]');" +
-                "    var AB = window.AndroidBridge;" +
-                "    if (!el) { try { if (AB && AB.debugLog) AB.debugLog('composer NOT FOUND'); } catch (e) {} return; }" +
-                "    try { if (AB && AB.debugLog) AB.debugLog('composer focus: ' + (el.id || el.getAttribute('data-testid') || el.tagName)); } catch (e) {}" +
-                "    try { el.focus({preventScroll: true}); } catch (e) { try { el.focus(); } catch (e2) {} }" +
-                "    try { el.dispatchEvent(new Event('focus', {bubbles: true})); } catch (e) {}" +
-                "    try { el.dispatchEvent(new Event('focusin', {bubbles: true})); } catch (e) {}" +
-                "  } catch (e) {}" +
-                "})();";
+        String js = ChatGptSiteContract.COMPOSER_FOCUS_JS;
         wv.evaluateJavascript(js, null);
         // Programmatic JS focus does not reliably summon the Android IME —
         // the site only commits a pending attachment while the composer is
