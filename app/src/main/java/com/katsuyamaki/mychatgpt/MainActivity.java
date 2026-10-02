@@ -39,7 +39,6 @@ import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
-import android.webkit.WebBackForwardList;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebStorage;
@@ -56,6 +55,7 @@ import androidx.core.splashscreen.SplashScreenViewProvider;
 import androidx.webkit.WebViewCompat;
 
 import com.katsuyamaki.mychatgpt.webview.CrashTracker;
+import com.katsuyamaki.mychatgpt.webview.MainWebViewController;
 import com.katsuyamaki.mychatgpt.webview.WebViewManagerDialog;
 import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
 import com.katsuyamaki.mychatgpt.webview.WelcomeDialog;
@@ -69,7 +69,6 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
 public class MainActivity extends Activity {
 
@@ -105,7 +104,7 @@ public class MainActivity extends Activity {
     boolean initialLoadComplete = false;
     private final List<WebView> popupViews = new ArrayList<>();
 
-    private Map<String, String> extraHeaders;
+    private MainWebViewController mainWebViewController;
 
     private ValueCallback<Uri[]> filePathCallback;
     private Uri pendingCameraUri;
@@ -306,10 +305,14 @@ public class MainActivity extends Activity {
 
         setContentView(R.layout.activity_main);
 
-        extraHeaders = ChatGptSiteContract.newRequestHeaders();
-
         webview = findViewById(R.id.activity_main_webview);
         rootLayout = (ViewGroup) webview.getParent();
+        mainWebViewController = new MainWebViewController(
+                this,
+                rootLayout,
+                ChatGptSiteContract.newRequestHeaders(),
+                ChatGptSiteContract.MOBILE_USER_AGENT,
+                ChatGptSiteContract::isAllowedHost);
         loadingOverlay = findViewById(R.id.loading_overlay);
         loadingLogo = findViewById(R.id.loading_logo);
         loadingProgressBar = findViewById(R.id.loading_progress_bar);
@@ -395,7 +398,7 @@ public class MainActivity extends Activity {
 
         // Wire the WebView up (initial setup; recreated in place if the
         // renderer ever dies — see onRenderProcessGone).
-        setupMainWebView();
+        setupMainWebView(webview);
 
         // Best-effort sweep of stale one-shot files (camera captures, shared
         // copies) so the cache directory cannot grow without bound.
@@ -413,29 +416,10 @@ public class MainActivity extends Activity {
         // WebView's back/forward list and resume the EXACT page — the open
         // conversation included — instead of cold-booting the homepage
         // (the "app relaunches and loses my chat" symptom).
-        boolean restoredFromState = false;
-        if (savedInstanceState != null) {
-            try {
-                WebBackForwardList nav = webview.restoreState(savedInstanceState);
-                if (nav != null && nav.getSize() > 0
-                        && nav.getCurrentItem() != null
-                        && nav.getCurrentItem().getUrl() != null) {
-                    String cur = nav.getCurrentItem().getUrl();
-                    if (cur.startsWith("http://") || cur.startsWith("https://")) {
-                        // Re-navigate explicitly so our X-Requested-With
-                        // header policy applies to the restored load too
-                        // (restoreState alone loads without extra headers,
-                        // which trips ChatGPT's "install the app" banner).
-                        loadUrlWithHeaders(webview, cur);
-                    }
-                    restoredFromState = true;
-                }
-            } catch (Throwable t) {
-                Log.e(TAG, "WebView state restore failed", t);
-            }
-        }
+        boolean restoredFromState =
+                mainWebViewController.restoreNavigationState(webview, savedInstanceState);
         if (!restoredFromState) {
-            loadUrlWithHeaders(webview, ChatGptSiteContract.MAIN_URL);
+            mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
         }
 
         // Process share-from-outside intent AFTER the initial load has been
@@ -683,18 +667,19 @@ public class MainActivity extends Activity {
         return result;
     }
 
-    private void loadUrlWithHeaders(WebView view, String url) {
-        view.loadUrl(url, extraHeaders);
-    }
-
     /** Wire up the main WebView (the initial instance from the layout, or a
      *  fresh one after a renderer crash). */
-    private void setupMainWebView() {
-        configureWebView(webview.getSettings());
-        setupClients(webview);
-        setupDownloads(webview);
-        setupImageContextMenu(webview);
-        installDocumentStartOverrides(webview);
+    private void setupMainWebView(WebView mainWebView) {
+        int backgroundColor = isDarkMode() ? 0xFF0D0D0D : 0xFFFFFFFF;
+        mainWebViewController.configureMainWebView(
+                mainWebView,
+                backgroundColor,
+                new WebAppInterface(this, mainWebView),
+                "AndroidBridge");
+        setupClients(mainWebView);
+        setupDownloads(mainWebView);
+        setupImageContextMenu(mainWebView);
+        installDocumentStartOverrides(mainWebView);
     }
 
     /**
@@ -726,93 +711,6 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             Log.e(TAG, "addDocumentStartJavaScript failed", t);
         }
-    }
-
-    /** Replace a dead main WebView with a fresh one (renderer crash path). */
-    private void recreateMainWebView() {
-        try {
-            rootLayout.removeView(webview);
-            final WebView dead = webview;
-            // Defer destroy(): this runs INSIDE onRenderProcessGone of this
-            // very WebView — destroying it synchronously from within that
-            // callback crashes on some Chromium builds (Android 15).
-            // Detach now, destroy after the callback stack has unwound.
-            rootLayout.post(() -> {
-                try {
-                    dead.destroy();
-                } catch (Throwable t) {
-                    Log.e(TAG, "deferred main WebView destroy failed", t);
-                }
-            });
-        } catch (Throwable t) {
-            Log.e(TAG, "Error destroying dead WebView", t);
-        }
-        webview = new WebView(this);
-        webview.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
-        rootLayout.addView(webview, 0);
-        setupMainWebView();
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private void configureWebView(WebSettings settings) {
-        // JS + storage
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setBlockNetworkImage(false);
-
-        // Explicit security posture — do not rely on platform defaults, which
-        // shift with targetSdk bumps: no local file/content access from the
-        // page, Safe Browsing on, cleartext off (also declared in manifest).
-        settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(false);
-        // Same posture for mixed content (pattern from the AI Studio
-        // webclient): chatgpt.com and every auth host are HTTPS-only, so
-        // blocking http:// subresources inside the HTTPS page costs nothing
-        // and cannot regress a future targetSdk default.
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            settings.setSafeBrowsingEnabled(true);
-        }
-
-        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
-        settings.setBlockNetworkLoads(false);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-
-        settings.setSupportMultipleWindows(true);
-        settings.setJavaScriptCanOpenWindowsAutomatically(true);
-
-        settings.setUserAgentString(ChatGptSiteContract.MOBILE_USER_AGENT);
-
-        settings.setUseWideViewPort(true);
-        settings.setLoadWithOverviewMode(true);
-        settings.setBuiltInZoomControls(true);
-        settings.setSupportZoom(true);
-        settings.setDisplayZoomControls(false);
-
-        webview.requestFocusFromTouch();
-        // Theme-matched background: the WebView's default background is opaque
-        // WHITE, which flashes on every reload / renderer rebuild / popup
-        // navigation before the site's own CSS paints. In night mode paint
-        // ChatGPT's dark surface instead so those transitions are seamless.
-        applyWebViewBackground(webview);
-        // Privacy: block third-party cookies on the main page (cross-site
-        // trackers embedded in chatgpt.com). OAuth POPUPS keep them enabled —
-        // the Google/Auth0 redirect chain needs them to complete sign-in.
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webview, false);
-
-        // WebView debugging (chrome://inspect) only in experimental builds
-        // — never in release. v6.24.31: keyed on EXPERIMENTAL because the
-        // debug buildType now sets debuggable=false (ART speed), which
-        // flips BuildConfig.DEBUG to false.
-        if (BuildConfig.EXPERIMENTAL && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-            WebView.setWebContentsDebuggingEnabled(true);
-        }
-
-        // Add JS interface for AndroidBridge (clipboard override, share, blob download)
-        webview.addJavascriptInterface(new WebAppInterface(this, webview), "AndroidBridge");
     }
 
     /**
@@ -1162,17 +1060,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void openUrlInBrowser(String url) {
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-        } catch (Exception e) {
-            Log.e(TAG, "openUrlInBrowser failed", e);
-            Toast.makeText(this, "Cannot open URL", Toast.LENGTH_SHORT).show();
-        }
-    }
-
     private void setupClients(final WebView webView) {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -1246,7 +1133,7 @@ public class MainActivity extends Activity {
                 // Legacy callback (API < 24, fires for all frames): original
                 // permissive behavior — null-host URLs must load, or blob:/
                 // data: iframe apps (investigation panel) break.
-                return shouldOverrideNavigationFrame(url);
+                return mainWebViewController.shouldOverrideFrame(url);
             }
 
             @Override
@@ -1256,7 +1143,7 @@ public class MainActivity extends Activity {
                         && !request.isForMainFrame()) {
                     return shouldOverrideNavigationFrame(request.getUrl().toString());
                 }
-                return shouldOverrideNavigation(request.getUrl().toString());
+                return mainWebViewController.shouldOverrideMainFrame(request.getUrl().toString());
             }
 
             @SuppressWarnings("deprecation")
@@ -1304,8 +1191,9 @@ public class MainActivity extends Activity {
                     // full loading-screen flash. Fixes the "brief black
                     // screen on resume from task manager" report (present
                     // since the official v6.24 release).
-                    recreateMainWebView();
-                    loadUrlWithHeaders(webview, ChatGptSiteContract.MAIN_URL);
+                    webview = mainWebViewController.recreateMainWebView(
+                            webview, this::setupMainWebView);
+                    mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
                 } else {
                     removePopup(view);
                 }
@@ -2403,7 +2291,7 @@ public class MainActivity extends Activity {
             @SuppressWarnings("deprecation")
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, String url) {
-                boolean result = shouldOverrideNavigationFrame(url);
+                boolean result = mainWebViewController.shouldOverrideFrame(url);
                 if (result) maybeRemovePopupForExternalLink(url);
                 return result;
             }
@@ -2416,9 +2304,9 @@ public class MainActivity extends Activity {
                 boolean isMainFrame = (Build.VERSION.SDK_INT < Build.VERSION_CODES.N)
                         || request.isForMainFrame();
                 if (!isMainFrame) {
-                    result = shouldOverrideNavigationFrame(url);
+                    result = mainWebViewController.shouldOverrideFrame(url);
                 } else {
-                    result = shouldOverrideNavigation(url);
+                    result = mainWebViewController.shouldOverrideMainFrame(url);
                 }
                 if (result && isMainFrame) maybeRemovePopupForExternalLink(url);
                 return result;
@@ -2456,7 +2344,7 @@ public class MainActivity extends Activity {
                 Uri uri = Uri.parse(url);
                 String host = uri.getHost();
                 if (host != null && (ChatGptSiteContract.isChatGptHost(host)) && !url.contains("/auth/")) {
-                    loadUrlWithHeaders(webview, url);
+                    mainWebViewController.loadUrl(webview, url);
                     removePopup(popup);
                 }
             }
@@ -2661,74 +2549,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /**
-     * Navigation policy shared by the main WebView and popups:
-     *  - only http/https may load inside the app (file:, data:, javascript:
-     *    and friends never load locally),
-     *  - allowlisted hosts load in the app,
-     *  - everything else goes to the system browser.
-     */
-    /**
-     * MAIN-FRAME navigation policy. http/https with allowlisted hosts load
-     * in-app; everything else on the allowlist boundary goes to the browser.
-     * blob:/data:/about:/javascript: load in-place — the official release
-     * allowed null-host URLs, and blocking them here would break any site
-     * feature that navigates the main frame to generated content. Only
-     * file:/content: stay blocked (the actual local-file hardening win).
-     */
-    private boolean shouldOverrideNavigation(String url) {
-        if (url == null) return false;
-        Uri uri;
-        try {
-            uri = Uri.parse(url);
-        } catch (Exception e) {
-            return false;
-        }
-        String scheme = uri.getScheme();
-        boolean isWeb = "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
-        if (isWeb) {
-            String host = uri.getHost();
-            if (host != null && !ChatGptSiteContract.isAllowedHost(host)) {
-                openUrlInBrowser(url);
-                return true;
-            }
-            return false;
-        }
-        String s = scheme == null ? "" : scheme.toLowerCase(Locale.ROOT);
-        if (s.equals("mailto") || s.equals("tel") || s.equals("sms")
-                || s.equals("geo") || s.equals("intent") || s.equals("market")) {
-            openUrlInBrowser(url);
-            return true;
-        }
-        if (s.equals("file") || s.equals("content")) return true; // blocked
-        return false; // blob:, data:, about:, javascript:, schemeless -> load
-    }
-
-    /**
-     * IFRAME navigation policy — EXACTLY the original app's behavior. The
-     * earlier scheme allowlist (returning true for every non-http URL)
-     * blocked blob:/data: iframes, which is what broke ChatGPT's embedded
-     * investigation panel with "Error loading application: Runtime error":
-     * the panel is an iframe app whose URL has no host. Iframes now load
-     * anything with a null host; http iframes to non-allowlisted hosts keep
-     * going to the browser, as the official release did.
-     */
-    private boolean shouldOverrideNavigationFrame(String url) {
-        if (url == null) return false;
-        Uri uri;
-        try {
-            uri = Uri.parse(url);
-        } catch (Exception e) {
-            return false;
-        }
-        String host = uri.getHost();
-        if (host != null && !ChatGptSiteContract.isAllowedHost(host)) {
-            openUrlInBrowser(url);
-            return true;
-        }
-        return false;
-    }
-
     /** Shared file-chooser implementation (previously duplicated in both clients). */
     private boolean openFileChooser(ValueCallback<Uri[]> callback) {
         if (filePathCallback != null) {
@@ -2921,7 +2741,7 @@ public class MainActivity extends Activity {
                             startLoadingLogoAnimation();
                             syncLoadingProgressBar();
                         }
-                        loadUrlWithHeaders(webview, ChatGptSiteContract.MAIN_URL);
+                        mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
                     })
                     .setNegativeButton("Close app", (d, w) -> {
                         offlineDialogShowing = false;
@@ -3011,7 +2831,7 @@ public class MainActivity extends Activity {
         // Pause JS timers/layout for all our WebViews while backgrounded —
         // previously a streaming chat kept running (and draining battery) in
         // the background.
-        if (webview != null) webview.onPause();
+        mainWebViewController.pause(webview);
         for (WebView p : new ArrayList<>(popupViews)) {
             try { p.onPause(); } catch (Throwable ignored) {}
         }
@@ -3025,19 +2845,13 @@ public class MainActivity extends Activity {
         // to (configuration-driven recreation, memory-pressure activity
         // destroy, process death). onCreate's restore path uses it to
         // resume the open conversation instead of the homepage.
-        if (webview != null) {
-            try {
-                webview.saveState(outState);
-            } catch (Throwable t) {
-                Log.e(TAG, "WebView saveState failed", t);
-            }
-        }
+        mainWebViewController.saveNavigationState(webview, outState);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (webview != null) webview.onResume();
+        mainWebViewController.resume(webview);
         for (WebView p : new ArrayList<>(popupViews)) {
             try { p.onResume(); } catch (Throwable ignored) {}
         }
@@ -3191,9 +3005,7 @@ public class MainActivity extends Activity {
             removePopup(top);
             return;
         }
-        if (webview != null && webview.canGoBack()) {
-            webview.goBack();
-        } else {
+        if (!mainWebViewController.goBackIfPossible(webview)) {
             super.onBackPressed();
         }
     }
@@ -3211,17 +3023,8 @@ public class MainActivity extends Activity {
             loadingLogo.clearAnimation();
         }
         stopLoadingLogoAnimation();
-        if (webview != null) {
-            // Documented teardown order: detach, remove child views, destroy.
-            try {
-                rootLayout.removeView(webview);
-                webview.removeAllViews();
-                webview.destroy();
-            } catch (Exception e) {
-                Log.e(TAG, "Error destroying WebView", e);
-            }
-            webview = null;
-        }
+        mainWebViewController.destroyMainWebView(webview);
+        webview = null;
         filePathCallback = null;
         pendingShareFileUri = null;
         super.onDestroy();
