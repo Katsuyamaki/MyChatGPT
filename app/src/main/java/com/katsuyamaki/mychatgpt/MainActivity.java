@@ -2831,7 +2831,7 @@ public class MainActivity extends Activity {
         // Pause JS timers/layout for all our WebViews while backgrounded —
         // previously a streaming chat kept running (and draining battery) in
         // the background.
-        mainWebViewController.pause(webview);
+        if (mainWebViewController != null) mainWebViewController.pause(webview);
         for (WebView p : new ArrayList<>(popupViews)) {
             try { p.onPause(); } catch (Throwable ignored) {}
         }
@@ -2845,13 +2845,15 @@ public class MainActivity extends Activity {
         // to (configuration-driven recreation, memory-pressure activity
         // destroy, process death). onCreate's restore path uses it to
         // resume the open conversation instead of the homepage.
-        mainWebViewController.saveNavigationState(webview, outState);
+        if (mainWebViewController != null) {
+            mainWebViewController.saveNavigationState(webview, outState);
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        mainWebViewController.resume(webview);
+        if (mainWebViewController != null) mainWebViewController.resume(webview);
         for (WebView p : new ArrayList<>(popupViews)) {
             try { p.onResume(); } catch (Throwable ignored) {}
         }
@@ -3005,7 +3007,8 @@ public class MainActivity extends Activity {
             removePopup(top);
             return;
         }
-        if (!mainWebViewController.goBackIfPossible(webview)) {
+        if (mainWebViewController == null
+                || !mainWebViewController.goBackIfPossible(webview)) {
             super.onBackPressed();
         }
     }
@@ -3023,7 +3026,15 @@ public class MainActivity extends Activity {
             loadingLogo.clearAnimation();
         }
         stopLoadingLogoAnimation();
-        mainWebViewController.destroyMainWebView(webview);
+        if (mainWebViewController != null) {
+            mainWebViewController.destroyMainWebView(webview);
+        } else if (webview != null) {
+            try {
+                webview.destroy();
+            } catch (Throwable t) {
+                Log.e(TAG, "fallback WebView destroy failed", t);
+            }
+        }
         webview = null;
         filePathCallback = null;
         pendingShareFileUri = null;
