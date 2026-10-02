@@ -56,6 +56,7 @@ import androidx.webkit.WebViewCompat;
 
 import com.katsuyamaki.mychatgpt.webview.CrashTracker;
 import com.katsuyamaki.mychatgpt.webview.MainWebViewController;
+import com.katsuyamaki.mychatgpt.webview.PopupAuthController;
 import com.katsuyamaki.mychatgpt.webview.WebViewManagerDialog;
 import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
 import com.katsuyamaki.mychatgpt.webview.WelcomeDialog;
@@ -102,9 +103,8 @@ public class MainActivity extends Activity {
      * settings tabs) are ignored — they must NOT re-show the loading overlay.
      */
     boolean initialLoadComplete = false;
-    private final List<WebView> popupViews = new ArrayList<>();
-
     private MainWebViewController mainWebViewController;
+    private PopupAuthController popupAuthController;
 
     private ValueCallback<Uri[]> filePathCallback;
     private Uri pendingCameraUri;
@@ -313,6 +313,41 @@ public class MainActivity extends Activity {
                 ChatGptSiteContract.newRequestHeaders(),
                 ChatGptSiteContract.MOBILE_USER_AGENT,
                 ChatGptSiteContract::isAllowedHost);
+        popupAuthController = new PopupAuthController(
+                this,
+                rootLayout,
+                mainWebViewController,
+                new PopupAuthController.Host() {
+                    @Override
+                    public WebView getMainWebView() {
+                        return webview;
+                    }
+
+                    @Override
+                    public int getWebViewBackgroundColor() {
+                        return isDarkMode() ? 0xFF0D0D0D : 0xFFFFFFFF;
+                    }
+
+                    @Override
+                    public Object createJavascriptBridge(WebView popup) {
+                        return new WebAppInterface(MainActivity.this, popup);
+                    }
+
+                    @Override
+                    public void injectPageOverrides(WebView popup) {
+                        injectAllOverrides(popup);
+                    }
+
+                    @Override
+                    public void handleWebPermissionRequest(PermissionRequest request) {
+                        MainActivity.this.handleWebPermissionRequest(request);
+                    }
+
+                    @Override
+                    public boolean openFileChooser(ValueCallback<Uri[]> callback) {
+                        return MainActivity.this.openFileChooser(callback);
+                    }
+                });
         loadingOverlay = findViewById(R.id.loading_overlay);
         loadingLogo = findViewById(R.id.loading_logo);
         loadingProgressBar = findViewById(R.id.loading_progress_bar);
@@ -1122,7 +1157,7 @@ public class MainActivity extends Activity {
                 // The window.open JS override handles external links (X, Reddit, LinkedIn)
                 // BEFORE they reach onCreateWindow. Internal popups (share menu, OAuth)
                 // go through createPopup which creates a proper popup WebView.
-                return createPopup(resultMsg);
+                return popupAuthController.createPopup(resultMsg);
             }
         });
 
@@ -2252,183 +2287,6 @@ public class MainActivity extends Activity {
         return n.isEmpty() ? "shared_file" : n;
     }
 
-    private boolean createPopup(Message resultMsg) {
-        final WebView popup = new WebView(this);
-        popup.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
-        // Same theme-matched background as the main WebView — OAuth pages
-        // repaint over it immediately; this only kills the white flash in
-        // dark mode during the popup's first paint.
-        applyWebViewBackground(popup);
-
-        WebSettings ps = popup.getSettings();
-        ps.setJavaScriptEnabled(true);
-        ps.setDomStorageEnabled(true);
-        ps.setDatabaseEnabled(true);
-        ps.setSupportMultipleWindows(true);
-        ps.setJavaScriptCanOpenWindowsAutomatically(true);
-        ps.setUserAgentString(webview.getSettings().getUserAgentString());
-        ps.setCacheMode(WebSettings.LOAD_DEFAULT);
-        ps.setAllowFileAccess(false);
-        ps.setAllowContentAccess(false);
-        // OAuth popup: third-party cookies stay ENABLED here — the
-        // accounts.google.com / auth.openai.com redirect chain needs them.
-        CookieManager.getInstance().setAcceptThirdPartyCookies(popup, true);
-        popup.addJavascriptInterface(new WebAppInterface(this, popup), "AndroidBridge");
-        // Same document-start overrides as the main WebView — popup frames
-        // (OAuth, share menus) need the blob/share hooks too.
-        try {
-            if (WebViewUtil.isSupported()) {
-                WebViewCompat.addDocumentStartJavaScript(
-                        popup, ChatGptSiteContract.PAGE_OVERRIDES_JS, java.util.Collections.singleton("*"));
-            }
-        } catch (Throwable t) {
-            Log.e(TAG, "popup addDocumentStartJavaScript failed", t);
-        }
-
-        popup.setWebViewClient(new WebViewClient() {
-            @SuppressWarnings("deprecation")
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView v, String url) {
-                boolean result = mainWebViewController.shouldOverrideFrame(url);
-                if (result) maybeRemovePopupForExternalLink(url);
-                return result;
-            }
-
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView v,
-                                                    android.webkit.WebResourceRequest request) {
-                String url = request.getUrl().toString();
-                boolean result;
-                boolean isMainFrame = (Build.VERSION.SDK_INT < Build.VERSION_CODES.N)
-                        || request.isForMainFrame();
-                if (!isMainFrame) {
-                    result = mainWebViewController.shouldOverrideFrame(url);
-                } else {
-                    result = mainWebViewController.shouldOverrideMainFrame(url);
-                }
-                if (result && isMainFrame) maybeRemovePopupForExternalLink(url);
-                return result;
-            }
-
-            /** If shouldOverrideUrlLoading routed a MAIN-FRAME url to the
-             *  browser (because the host is not in the allowlist), the
-             *  popup WebView has nothing useful to render — it would just
-             *  sit there as a black screen on top of the chat until the
-             *  user back-presses. Remove it now so the user returns from
-             *  the browser straight back to their chat. */
-            private void maybeRemovePopupForExternalLink(String url) {
-                if (url == null) return;
-                try {
-                    Uri uri = Uri.parse(url);
-                    String host = uri.getHost();
-                    if (host != null && !ChatGptSiteContract.isAllowedHost(host)) {
-                        removePopup(popup);
-                    }
-                } catch (Exception e) { /* ignore parse failures */ }
-            }
-
-            @Override
-            public boolean onRenderProcessGone(WebView view,
-                                               android.webkit.RenderProcessGoneDetail detail) {
-                removePopup(popup);
-                return true;
-            }
-
-            @Override
-            public void onPageFinished(WebView v, String url) {
-                super.onPageFinished(v, url);
-                CookieManager.getInstance().flush();
-                injectAllOverrides(v);
-                Uri uri = Uri.parse(url);
-                String host = uri.getHost();
-                if (host != null && (ChatGptSiteContract.isChatGptHost(host)) && !url.contains("/auth/")) {
-                    mainWebViewController.loadUrl(webview, url);
-                    removePopup(popup);
-                }
-            }
-
-        });
-
-        popup.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onCloseWindow(WebView window) {
-                removePopup(popup);
-            }
-
-            @Override
-            public boolean onConsoleMessage(ConsoleMessage cm) {
-                if (BuildConfig.EXPERIMENTAL) {
-                    Log.d(TAG, "[popup] " + cm.message());
-                }
-                return true;
-            }
-
-            @Override
-            public void onPermissionRequest(final PermissionRequest request) {
-                handleWebPermissionRequest(request);
-            }
-
-            @Override
-            public boolean onShowFileChooser(WebView w,
-                                             ValueCallback<Uri[]> callback,
-                                             FileChooserParams fileChooserParams) {
-                return openFileChooser(callback);
-            }
-        });
-
-        rootLayout.addView(popup);
-        popupViews.add(popup);
-
-        WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
-        transport.setWebView(popup);
-        resultMsg.sendToTarget();
-        return true;
-    }
-
-    private void removePopup(WebView popup) {
-        removePopup(popup, false);
-    }
-
-    /**
-     * Detach a popup WebView and destroy it.
-     *
-     * immediate=false (the default) is used whenever we are INSIDE a
-     * WebView callback: shouldOverrideUrlLoading (external-link routing),
-     * onPageFinished (OAuth completion), onRenderProcessGone (renderer
-     * death under memory pressure), and the DownloadListener. Calling
-     * WebView.destroy() synchronously from inside one of those callbacks
-     * crashes on newer Chromium builds — on Android 15 it killed the whole
-     * app the moment a login popup was torn down (the F-Droid review's
-     * "app crashes when tapping any login button"). Detach NOW (the view
-     * disappears immediately and nothing else can touch it) but POST the
-     * destroy() to the next message-loop pass, after the callback stack
-     * has unwound.
-     *
-     * immediate=true is for onDestroy(), where the activity is going away
-     * and there will be no further useful loop pass — destroy inline.
-     */
-    private void removePopup(WebView popup, boolean immediate) {
-        try {
-            rootLayout.removeView(popup);
-            popupViews.remove(popup);
-            if (immediate) {
-                popup.destroy();
-            } else {
-                rootLayout.post(() -> {
-                    try {
-                        popup.destroy();
-                    } catch (Throwable t) {
-                        Log.e(TAG, "deferred popup destroy failed", t);
-                    }
-                });
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Error removing popup", e);
-        }
-    }
-
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -2832,9 +2690,7 @@ public class MainActivity extends Activity {
         // previously a streaming chat kept running (and draining battery) in
         // the background.
         if (mainWebViewController != null) mainWebViewController.pause(webview);
-        for (WebView p : new ArrayList<>(popupViews)) {
-            try { p.onPause(); } catch (Throwable ignored) {}
-        }
+        if (popupAuthController != null) popupAuthController.pauseAll();
         CookieManager.getInstance().flush();
     }
 
@@ -2854,9 +2710,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (mainWebViewController != null) mainWebViewController.resume(webview);
-        for (WebView p : new ArrayList<>(popupViews)) {
-            try { p.onResume(); } catch (Throwable ignored) {}
-        }
+        if (popupAuthController != null) popupAuthController.resumeAll();
     }
 
     @Override
@@ -3002,9 +2856,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (!popupViews.isEmpty()) {
-            WebView top = popupViews.remove(popupViews.size() - 1);
-            removePopup(top);
+        if (popupAuthController != null && popupAuthController.closeTopPopup()) {
             return;
         }
         if (mainWebViewController == null
@@ -3019,8 +2871,8 @@ public class MainActivity extends Activity {
         // launches (no signal, swipe-away) no longer count toward the
         // "pick another WebView" bounce.
         CrashTracker.reset();
-        for (WebView popup : new ArrayList<>(popupViews)) {
-            removePopup(popup, true);
+        if (popupAuthController != null) {
+            popupAuthController.destroyAll();
         }
         if (loadingLogo != null) {
             loadingLogo.clearAnimation();
