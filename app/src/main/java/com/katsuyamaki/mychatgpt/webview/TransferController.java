@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
+import android.os.SystemClock;
+import android.util.Log;
 import android.webkit.CookieManager;
 import android.webkit.WebView;
 import android.widget.Toast;
@@ -31,7 +33,12 @@ public final class TransferController {
     private static final String TAG = "MyChatGPTTransfer";
     public static final int REQUEST_STORAGE_PERM = 1003;
 
+    public interface Host {
+        WebView getMainWebView();
+    }
+
     private final Activity activity;
+    private final Host host;
 
     private String[] pendingDownload;
 
@@ -48,8 +55,9 @@ public final class TransferController {
 
     private volatile long blobBridgeSuccessAt;
 
-    public TransferController(Activity activity) {
+    public TransferController(Activity activity, Host host) {
         this.activity = activity;
+        this.host = host;
     }
 
     public void onBlobChunk(String name, String mime, int index, int total, String data) {
@@ -144,7 +152,7 @@ public final class TransferController {
                 fos.write(bytes);
                 fos.flush();
                 fos.close();
-                Uri uri = androidx.core.content.FileProvider.getUriForFile(this,
+                Uri uri = androidx.core.content.FileProvider.getUriForFile(activity,
                         activity.getPackageName() + ".fileprovider", outFile);
                 activity.runOnUiThread(() -> {
                     try {
@@ -184,7 +192,10 @@ public final class TransferController {
 
     public void downloadAndShareImageFile(String url) {
         final String cookies = CookieManager.getInstance().getCookie(url);
-        final String userAgent = webview.getSettings().getUserAgentString();
+        WebView mainWebView = host.getMainWebView();
+        final String userAgent = mainWebView != null
+                ? mainWebView.getSettings().getUserAgentString()
+                : ChatGptSiteContract.MOBILE_USER_AGENT;
 
         new Thread(() -> {
             HttpURLConnection conn = null;
@@ -246,7 +257,7 @@ public final class TransferController {
 
     private void shareFile(File file, String mime) {
         try {
-            Uri uri = androidx.core.content.FileProvider.getUriForFile(this,
+            Uri uri = androidx.core.content.FileProvider.getUriForFile(activity,
                     activity.getPackageName() + ".fileprovider", file);
             Intent share = new Intent(Intent.ACTION_SEND);
             share.setType(mime);
@@ -262,7 +273,10 @@ public final class TransferController {
 
     public void downloadImageToDownloads(String url) {
         final String cookies = CookieManager.getInstance().getCookie(url);
-        final String userAgent = webview.getSettings().getUserAgentString();
+        WebView mainWebView = host.getMainWebView();
+        final String userAgent = mainWebView != null
+                ? mainWebView.getSettings().getUserAgentString()
+                : ChatGptSiteContract.MOBILE_USER_AGENT;
         new Thread(() -> {
             HttpURLConnection conn = null;
             InputStream in = null;

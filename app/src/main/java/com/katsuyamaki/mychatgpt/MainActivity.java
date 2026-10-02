@@ -293,7 +293,9 @@ public class MainActivity extends Activity {
                 ChatGptSiteContract.newRequestHeaders(),
                 ChatGptSiteContract.MOBILE_USER_AGENT,
                 ChatGptSiteContract::isAllowedHost);
-        transferController = new TransferController(this);
+        transferController = new TransferController(
+                this,
+                () -> webview);
         popupAuthController = new PopupAuthController(
                 this,
                 rootLayout,
