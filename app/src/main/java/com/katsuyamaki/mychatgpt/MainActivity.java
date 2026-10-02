@@ -1192,7 +1192,7 @@ public class MainActivity extends Activity {
                     // screen on resume from task manager" report (present
                     // since the official v6.24 release).
                     webview = mainWebViewController.recreateMainWebView(
-                            webview, this::setupMainWebView);
+                            webview, MainActivity.this::setupMainWebView);
                     mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
                 } else {
                     removePopup(view);
