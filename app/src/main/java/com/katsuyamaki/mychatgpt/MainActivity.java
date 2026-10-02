@@ -1230,7 +1230,7 @@ public class MainActivity extends Activity {
                             webview, MainActivity.this::setupMainWebView);
                     mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
                 } else {
-                    removePopup(view);
+                    if (popupAuthController != null) popupAuthController.removePopup(view);
                 }
                 return true;
             }

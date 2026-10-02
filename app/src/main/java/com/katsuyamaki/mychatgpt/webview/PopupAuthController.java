@@ -189,6 +189,10 @@ public final class PopupAuthController {
         return true;
     }
 
+    public void removePopup(WebView popup) {
+        removePopup(popup, false);
+    }
+
     public boolean closeTopPopup() {
         if (popupViews.isEmpty()) return false;
         WebView top = popupViews.get(popupViews.size() - 1);
