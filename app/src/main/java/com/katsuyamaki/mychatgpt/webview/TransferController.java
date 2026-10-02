@@ -381,8 +381,8 @@ public final class TransferController {
                     res -> {
                         String sig = res == null ? "" : res;
                         if (sig.length() >= 2
-                                && sig.startsWith(""")
-                                && sig.endsWith(""")) {
+                                && sig.startsWith("\"")
+                                && sig.endsWith("\"")) {
                             sig = sig.substring(1, sig.length() - 1);
                         }
 
@@ -476,8 +476,8 @@ public final class TransferController {
         webView.evaluateJavascript(js, res -> {
             String result = res == null ? "" : res;
             if (result.length() >= 2
-                    && result.startsWith(""")
-                    && result.endsWith(""")) {
+                    && result.startsWith("\"")
+                    && result.endsWith("\"")) {
                 result = result.substring(1, result.length() - 1);
             }
             Log.i(TAG, "attach check: " + result);
