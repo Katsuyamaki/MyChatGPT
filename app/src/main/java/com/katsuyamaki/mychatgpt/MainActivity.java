@@ -1141,7 +1141,7 @@ public class MainActivity extends Activity {
                                                     android.webkit.WebResourceRequest request) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
                         && !request.isForMainFrame()) {
-                    return shouldOverrideNavigationFrame(request.getUrl().toString());
+                    return mainWebViewController.shouldOverrideFrame(request.getUrl().toString());
                 }
                 return mainWebViewController.shouldOverrideMainFrame(request.getUrl().toString());
             }
