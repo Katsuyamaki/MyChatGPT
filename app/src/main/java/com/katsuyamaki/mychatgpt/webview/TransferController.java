@@ -1,18 +1,23 @@
 package com.katsuyamaki.mychatgpt.webview;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
+import android.provider.MediaStore;
 import android.util.Log;
 import android.webkit.CookieManager;
+import android.webkit.ValueCallback;
 import android.webkit.WebView;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Toast;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import com.katsuyamaki.mychatgpt.BuildConfig;
 import com.katsuyamaki.mychatgpt.site.ChatGptSiteContract;
 
 import java.io.File;
@@ -35,12 +40,26 @@ public final class TransferController {
 
     public interface Host {
         WebView getMainWebView();
+        boolean isInitialLoadComplete();
     }
 
     private final Activity activity;
     private final Host host;
 
     private String[] pendingDownload;
+
+    private ValueCallback<Uri[]> filePathCallback;
+    private Uri pendingCameraUri;
+    private File pendingCameraFile;
+    private boolean cameraPermForChooser;
+
+    private volatile Uri pendingShareFileUri;
+    private volatile boolean pendingAutoAttach;
+    private volatile boolean pendingAutoFocusText;
+    private volatile String pendingFileB64;
+    private volatile String pendingFileName;
+    private volatile String pendingFileMime;
+    private volatile long lastFileInjectionAt;
 
     private volatile boolean blobDownloadInFlight;
     private volatile String pendingBlobFilename;
@@ -82,20 +101,37 @@ public final class TransferController {
     }
 
     public boolean onRequestPermissionsResult(int requestCode, int[] grantResults) {
-        if (requestCode != REQUEST_STORAGE_PERM) return false;
-
-        boolean granted = grantResults.length > 0
-                && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
-        String[] download = pendingDownload;
-        pendingDownload = null;
-        if (granted && download != null) {
-            downloadWithCookies(download[0], download[1], download[2], download[3]);
-        } else if (download != null) {
-            Toast.makeText(activity,
-                    "Download cancelled — storage permission was denied",
-                    Toast.LENGTH_LONG).show();
+        if (requestCode == REQUEST_STORAGE_PERM) {
+            boolean granted = grantResults.length > 0
+                    && grantResults[0]
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            String[] download = pendingDownload;
+            pendingDownload = null;
+            if (granted && download != null) {
+                downloadWithCookies(
+                        download[0], download[1], download[2], download[3]);
+            } else if (download != null) {
+                Toast.makeText(activity,
+                        "Download cancelled — storage permission was denied",
+                        Toast.LENGTH_LONG).show();
+            }
+            return true;
         }
-        return true;
+
+        if (requestCode == REQUEST_CAMERA_PERM) {
+            if (cameraPermForChooser) {
+                cameraPermForChooser = false;
+                boolean granted = grantResults.length > 0
+                        && grantResults[0]
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                if (filePathCallback != null) {
+                    launchFileChooserNow(granted);
+                }
+            }
+            return true;
+        }
+
+        return false;
     }
 
     public void destroy() {
@@ -103,8 +139,528 @@ public final class TransferController {
         blobDownloadInFlight = false;
         pendingBlobFilename = null;
         pendingBlobMime = null;
+        pendingShareFileUri = null;
+        pendingAutoAttach = false;
+        pendingAutoFocusText = false;
+        pendingFileB64 = null;
+        pendingFileName = null;
+        pendingFileMime = null;
+        if (filePathCallback != null) {
+            filePathCallback = null;
+        }
+        pendingCameraUri = null;
+        pendingCameraFile = null;
         synchronized (blobChunksLock) {
             blobChunks.clear();
+        }
+    }
+
+    public void onStop() {
+        // A forgotten share must never hijack a later manual file-picker.
+        pendingShareFileUri = null;
+    }
+
+    public void handleShareIntent(Intent intent) {
+        if (intent == null || intent.getAction() == null) return;
+        String action = intent.getAction();
+        Log.i(TAG, "handleShareIntent: action=" + action + ", type=" + intent.getType());
+        markShareActive();
+
+        String sharedText = null;
+        Uri sharedFileUri = null;
+        String sharedFileMime = null;
+
+        if (Intent.ACTION_SEND.equals(action)) {
+            String type = intent.getType();
+            if (type != null && type.startsWith("text/")
+                    && intent.getStringExtra(Intent.EXTRA_TEXT) != null) {
+                sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
+            } else {
+                Uri fileUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                if (fileUri != null) {
+                    sharedFileUri = fileUri;
+                    sharedFileMime = type != null ? type : "*/*";
+                }
+            }
+        } else if (Intent.ACTION_PROCESS_TEXT.equals(action)) {
+            CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT);
+            if (text != null) {
+                sharedText = text.toString();
+            }
+        }
+
+        if (sharedText != null) {
+            handleSharedText(sharedText);
+        } else if (sharedFileUri != null) {
+            handleSharedFile(sharedFileUri, sharedFileMime);
+        }
+    }
+
+    private void handleSharedText(String text) {
+        if (BuildConfig.EXPERIMENTAL) {
+            Log.i(TAG, "handleSharedText: "
+                    + (text.length() > 80 ? text.substring(0, 80) + "..." : text));
+        }
+        copyToClipboard(text);
+
+        WebView webView = host.getMainWebView();
+        if (webView != null && !activity.isFinishing()) {
+            if (host.isInitialLoadComplete()) {
+                waitForComposerReady(20000, this::settleComposerAfterAutoAttach);
+            } else {
+                pendingAutoFocusText = true;
+            }
+        }
+    }
+
+    private void copyToClipboard(String text) {
+        try {
+            android.content.ClipboardManager clipboard =
+                    (android.content.ClipboardManager)
+                            activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                android.content.ClipData clip =
+                        android.content.ClipData.newPlainText("MyChatGPT", text);
+                clipboard.setPrimaryClip(clip);
+                Log.i(TAG, "Text copied to clipboard");
+                if (Build.VERSION.SDK_INT < 33) {
+                    Toast.makeText(activity,
+                            "Text copied — paste it into MyChatGPT",
+                            Toast.LENGTH_LONG).show();
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "copyToClipboard failed", e);
+        }
+    }
+
+    private void handleSharedFile(Uri fileUri, String mime) {
+        Log.i(TAG, "handleSharedFile: " + fileUri + " (" + mime + ")");
+
+        new Thread(() -> {
+            try {
+                String fileName = "shared_file_" + System.currentTimeMillis();
+                String originalName = getFileNameFromUri(fileUri);
+                if (originalName != null && !originalName.isEmpty()) {
+                    fileName = sanitizeSharedFileName(originalName);
+                } else {
+                    String ext = android.webkit.MimeTypeMap.getSingleton()
+                            .getExtensionFromMimeType(mime);
+                    if (ext != null && !ext.isEmpty()) {
+                        fileName += "." + ext;
+                    }
+                }
+
+                File outFile = new File(activity.getCacheDir(), fileName);
+                InputStream in = activity.getContentResolver().openInputStream(fileUri);
+                if (in == null) {
+                    activity.runOnUiThread(() -> Toast.makeText(activity,
+                            "Cannot read the shared file", Toast.LENGTH_LONG).show());
+                    return;
+                }
+                java.io.OutputStream out = new java.io.FileOutputStream(outFile);
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    out.write(buf, 0, n);
+                }
+                out.flush();
+                out.close();
+                in.close();
+
+                final Uri sharedUri = androidx.core.content.FileProvider.getUriForFile(
+                        activity, activity.getPackageName() + ".fileprovider", outFile);
+
+                String b64 = null;
+                if (outFile.length() < 50L * 1024 * 1024) {
+                    byte[] data = java.nio.file.Files.readAllBytes(outFile.toPath());
+                    b64 = android.util.Base64.encodeToString(
+                            data, android.util.Base64.NO_WRAP);
+                }
+
+                final String fileB64 = b64;
+                final String fileFinalName = fileName;
+                final String fileMime = (mime != null && mime.contains("/")) ? mime
+                        : android.webkit.MimeTypeMap.getSingleton()
+                                .getMimeTypeFromExtension(android.webkit.MimeTypeMap
+                                        .getFileExtensionFromUrl("file://x/" + fileName));
+
+                activity.runOnUiThread(() -> {
+                    pendingShareFileUri = sharedUri;
+                    if (fileB64 != null) {
+                        pendingFileB64 = fileB64;
+                        pendingFileName = fileFinalName;
+                        pendingFileMime = fileMime != null
+                                ? fileMime : "application/octet-stream";
+                        Toast.makeText(activity,
+                                "Please wait — the file will attach automatically",
+                                Toast.LENGTH_LONG).show();
+                    }
+
+                    WebView main = host.getMainWebView();
+                    if (host.isInitialLoadComplete() && main != null) {
+                        if (fileB64 != null) {
+                            waitForComposerReady(
+                                    ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS,
+                                    this::runFileDropSequence);
+                        }
+                    } else {
+                        pendingAutoAttach = true;
+                    }
+
+                    if (main != null) {
+                        main.postDelayed(() -> {
+                            if (pendingShareFileUri != null
+                                    && !activity.isFinishing()) {
+                                Toast.makeText(activity,
+                                        "Couldn't attach automatically — tap + and choose Files",
+                                        Toast.LENGTH_LONG).show();
+                            }
+                        }, 25000);
+                    }
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "handleSharedFile failed", e);
+                activity.runOnUiThread(() -> Toast.makeText(activity,
+                        "Failed to process file: " + e.getMessage(),
+                        Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    private String getFileNameFromUri(Uri uri) {
+        String result = null;
+        if ("content".equals(uri.getScheme())) {
+            try (android.database.Cursor cursor = activity.getContentResolver().query(
+                    uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int idx = cursor.getColumnIndex(
+                            android.provider.OpenableColumns.DISPLAY_NAME);
+                    if (idx >= 0) {
+                        result = cursor.getString(idx);
+                    }
+                }
+            }
+        }
+        if (result == null) {
+            result = uri.getLastPathSegment();
+        }
+        return result;
+    }
+
+    public void kickPendingSharePipelines() {
+        if (pendingAutoAttach && pendingFileB64 != null) {
+            pendingAutoAttach = false;
+            waitForComposerReady(
+                    ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS,
+                    this::runFileDropSequence);
+        } else if (pendingAutoAttach) {
+            pendingAutoAttach = false;
+        }
+
+        if (pendingAutoFocusText) {
+            pendingAutoFocusText = false;
+            waitForComposerReady(
+                    ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS,
+                    this::settleComposerAfterAutoAttach);
+        }
+    }
+
+    private void waitForComposerReady(int maxMs, Runnable action) {
+        WebView initial = host.getMainWebView();
+        if (initial == null || activity.isFinishing()) return;
+
+        final long deadline = SystemClock.elapsedRealtime() + maxMs;
+        final Runnable[] tick = new Runnable[1];
+        tick[0] = () -> {
+            WebView current = host.getMainWebView();
+            if (current == null || activity.isFinishing()) return;
+
+            current.evaluateJavascript(
+                    ChatGptSiteContract.COMPOSER_READY_PROBE_JS,
+                    res -> {
+                        String sig = res == null ? "" : res;
+                        if (sig.length() >= 2
+                                && sig.startsWith(""")
+                                && sig.endsWith(""")) {
+                            sig = sig.substring(1, sig.length() - 1);
+                        }
+
+                        if (sig.startsWith("ready")) {
+                            action.run();
+                        } else if (SystemClock.elapsedRealtime() < deadline) {
+                            WebView latest = host.getMainWebView();
+                            if (latest != null) {
+                                latest.postDelayed(
+                                        tick[0],
+                                        ChatGptSiteContract.COMPOSER_READY_POLL_MS);
+                            }
+                        } else {
+                            action.run();
+                        }
+                    });
+        };
+        tick[0].run();
+    }
+
+    private void runFileDropSequence() {
+        final String b64 = pendingFileB64;
+        final String name = pendingFileName;
+        final String mime = pendingFileMime;
+        WebView webView = host.getMainWebView();
+
+        if (webView == null || activity.isFinishing()
+                || b64 == null || name == null) {
+            return;
+        }
+        pendingFileB64 = null;
+
+        webView.evaluateJavascript(ChatGptSiteContract.FILE_BUFFER_RESET_JS, null);
+        final int chunkSize = ChatGptSiteContract.FILE_INJECTION_BASE64_CHUNK_SIZE;
+        for (int i = 0; i < b64.length(); i += chunkSize) {
+            final String chunk = b64.substring(
+                    i, Math.min(i + chunkSize, b64.length()));
+            webView.evaluateJavascript(
+                    ChatGptSiteContract.appendFileBufferJs(chunk), null);
+        }
+
+        final String safeName = name.replace("\\", "_").replace("'", "\\'");
+        final String safeMime = (mime != null
+                ? mime : "application/octet-stream").replace("'", "");
+
+        lastFileInjectionAt = SystemClock.elapsedRealtime();
+        String dropJs = ChatGptSiteContract.buildFileDropJs(safeName, safeMime);
+        webView.evaluateJavascript(dropJs, null);
+
+        webView.postDelayed(
+                this::settleComposerAfterAutoAttach,
+                ChatGptSiteContract.DROP_REFOCUS_DELAY_1_MS);
+        webView.postDelayed(
+                this::settleComposerAfterAutoAttach,
+                ChatGptSiteContract.DROP_REFOCUS_DELAY_2_MS);
+        webView.postDelayed(
+                this::settleComposerAfterAutoAttach,
+                ChatGptSiteContract.DROP_REFOCUS_DELAY_3_MS);
+        webView.postDelayed(
+                this::showKeyboardForComposer,
+                ChatGptSiteContract.DROP_KEYBOARD_DELAY_1_MS);
+        webView.postDelayed(
+                this::showKeyboardForComposer,
+                ChatGptSiteContract.DROP_KEYBOARD_DELAY_2_MS);
+    }
+
+    public void handleFileDropResult(boolean ok, String detail) {
+        Log.i(TAG, "drop result: " + (ok ? "ok" : "failed") + " " + detail);
+        if (ok) {
+            pendingShareFileUri = null;
+            final String checkName = pendingFileName;
+            WebView webView = host.getMainWebView();
+            if (webView != null) {
+                webView.postDelayed(
+                        () -> verifyAttachmentVisible(checkName),
+                        ChatGptSiteContract.ATTACHMENT_VERIFY_DELAY_MS);
+            }
+        } else if (pendingShareFileUri != null) {
+            Toast.makeText(activity,
+                    "Couldn't attach automatically — tap + and choose Files",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void verifyAttachmentVisible(String name) {
+        WebView webView = host.getMainWebView();
+        if (webView == null || activity.isFinishing() || name == null) return;
+
+        final String jsName = name.replace("\\", "_").replace("'", "\\'");
+        String js = ChatGptSiteContract.buildAttachmentVisibilityJs(jsName);
+        webView.evaluateJavascript(js, res -> {
+            String result = res == null ? "" : res;
+            if (result.length() >= 2
+                    && result.startsWith(""")
+                    && result.endsWith(""")) {
+                result = result.substring(1, result.length() - 1);
+            }
+            Log.i(TAG, "attach check: " + result);
+        });
+    }
+
+    public boolean openFileChooser(ValueCallback<Uri[]> callback) {
+        if (filePathCallback != null) {
+            filePathCallback.onReceiveValue(null);
+        }
+        filePathCallback = callback;
+
+        if (pendingShareFileUri != null
+                && SystemClock.elapsedRealtime() - lastFileInjectionAt
+                < ChatGptSiteContract.FILE_CHOOSER_RETRIGGER_GUARD_MS) {
+            Log.i(TAG, "ignoring site re-trigger after injection");
+            filePathCallback.onReceiveValue(null);
+            filePathCallback = null;
+            return true;
+        }
+
+        if (pendingShareFileUri != null) {
+            Log.i(TAG,
+                    "onShowFileChooser: returning pending shared file "
+                            + pendingShareFileUri);
+            filePathCallback.onReceiveValue(new Uri[]{pendingShareFileUri});
+            filePathCallback = null;
+            pendingShareFileUri = null;
+            Log.i(TAG, "auto-attach: file handed to page");
+
+            WebView webView = host.getMainWebView();
+            if (webView != null) {
+                webView.postDelayed(
+                        this::settleComposerAfterAutoAttach,
+                        ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_1_MS);
+                webView.postDelayed(
+                        this::settleComposerAfterAutoAttach,
+                        ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_2_MS);
+                webView.postDelayed(
+                        this::settleComposerAfterAutoAttach,
+                        ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_3_MS);
+                webView.postDelayed(
+                        this::settleComposerAfterAutoAttach,
+                        ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_4_MS);
+            }
+            return true;
+        }
+
+        if (ContextCompat.checkSelfPermission(
+                activity, android.Manifest.permission.CAMERA)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            cameraPermForChooser = true;
+            ActivityCompat.requestPermissions(
+                    activity,
+                    new String[]{android.Manifest.permission.CAMERA},
+                    REQUEST_CAMERA_PERM);
+            return true;
+        }
+
+        launchFileChooserNow(true);
+        return true;
+    }
+
+    private void launchFileChooserNow(boolean includeCamera) {
+        Intent contentIntent = new Intent(Intent.ACTION_GET_CONTENT);
+        contentIntent.addCategory(Intent.CATEGORY_OPENABLE);
+        contentIntent.setType("*/*");
+        contentIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+
+        Intent cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        boolean cameraReady = false;
+        if (includeCamera) {
+            try {
+                File cameraFile = new File(
+                        activity.getCacheDir(),
+                        "camera_capture_" + System.currentTimeMillis() + ".jpg");
+                Uri cameraUri = androidx.core.content.FileProvider.getUriForFile(
+                        activity,
+                        activity.getPackageName() + ".fileprovider",
+                        cameraFile);
+                cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri);
+                cameraIntent.addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                pendingCameraUri = cameraUri;
+                pendingCameraFile = cameraFile;
+                cameraReady = true;
+            } catch (Exception e) {
+                Log.e(TAG, "Camera setup failed", e);
+                pendingCameraUri = null;
+                pendingCameraFile = null;
+            }
+        }
+
+        Intent chooser = Intent.createChooser(contentIntent, "Select file");
+        if (cameraReady) {
+            chooser.putExtra(
+                    Intent.EXTRA_INITIAL_INTENTS,
+                    new Intent[]{cameraIntent});
+        }
+
+        try {
+            activity.startActivityForResult(chooser, REQUEST_FILE_CHOOSER);
+        } catch (Exception e) {
+            Log.e(TAG, "File chooser failed", e);
+            if (filePathCallback != null) {
+                filePathCallback.onReceiveValue(null);
+                filePathCallback = null;
+            }
+        }
+    }
+
+    public boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode != REQUEST_FILE_CHOOSER) return false;
+        if (filePathCallback == null) return true;
+
+        if (resultCode != Activity.RESULT_OK) {
+            if (pendingCameraFile != null && pendingCameraFile.exists()) {
+                pendingCameraFile.delete();
+            }
+            pendingCameraUri = null;
+            pendingCameraFile = null;
+            filePathCallback.onReceiveValue(null);
+            filePathCallback = null;
+            return true;
+        }
+
+        Uri[] results = null;
+        if (data == null
+                || (data.getData() == null && data.getClipData() == null)) {
+            if (pendingCameraFile != null
+                    && pendingCameraFile.exists()
+                    && pendingCameraFile.length() > 0) {
+                results = new Uri[]{pendingCameraUri};
+                Log.i(TAG, "Camera capture result: " + pendingCameraUri);
+            }
+        } else {
+            android.content.ClipData clipData = data.getClipData();
+            if (clipData != null) {
+                results = new Uri[clipData.getItemCount()];
+                for (int i = 0; i < clipData.getItemCount(); i++) {
+                    results[i] = clipData.getItemAt(i).getUri();
+                }
+            } else if (data.getData() != null) {
+                results = new Uri[]{data.getData()};
+            }
+        }
+
+        filePathCallback.onReceiveValue(results);
+        filePathCallback = null;
+        pendingCameraUri = null;
+        pendingCameraFile = null;
+        return true;
+    }
+
+    private void markShareActive() {
+        WebView webView = host.getMainWebView();
+        if (webView == null || activity.isFinishing()) return;
+        webView.evaluateJavascript(
+                ChatGptSiteContract.MARK_SHARE_ACTIVE_JS, null);
+    }
+
+    private void settleComposerAfterAutoAttach() {
+        WebView webView = host.getMainWebView();
+        if (webView == null || activity.isFinishing()) return;
+        webView.evaluateJavascript(
+                ChatGptSiteContract.COMPOSER_FOCUS_JS, null);
+        showKeyboardForComposer();
+    }
+
+    private void showKeyboardForComposer() {
+        try {
+            WebView webView = host.getMainWebView();
+            if (webView == null || activity.isFinishing()) return;
+            webView.requestFocus();
+            InputMethodManager imm = (InputMethodManager)
+                    activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                imm.showSoftInput(
+                        webView, InputMethodManager.SHOW_IMPLICIT);
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "showKeyboardForComposer failed", t);
         }
     }
 

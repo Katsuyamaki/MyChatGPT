@@ -77,9 +77,7 @@ public class MainActivity extends Activity {
     private static final String TAG = "MyChatGPTApp";
     private static final String PREFS_NAME = "webgpt_prefs";
 
-    private static final int REQUEST_FILE_CHOOSER = 54321;
     private static final int REQUEST_MEDIA_PERM = 1004;
-    private static final int REQUEST_CAMERA_PERM = 1005;
 
     WebView webview;
     ViewGroup rootLayout;
@@ -107,44 +105,11 @@ public class MainActivity extends Activity {
     private PopupAuthController popupAuthController;
     private TransferController transferController;
 
-    private ValueCallback<Uri[]> filePathCallback;
-    private Uri pendingCameraUri;
-    private File pendingCameraFile;
-
-    // Pending share-from-outside: file to inject into the MyChatGPT composer.
-    // Volatile: written on the background copy thread, read on the UI thread.
-    // Cleared in onStop so a forgotten share can never hijack a later
-    // file-picker invocation.
-    private volatile Uri pendingShareFileUri;
-
     // Pending WebView permission request (camera/mic) while the OS dialog is up
     private PermissionRequest pendingWebPermissionRequest;
 
-    // True while the OS camera-permission dialog is up on behalf of the file chooser
-    private boolean cameraPermForChooser;
-
-    // True when a shared file is waiting for the page to finish loading so the
-    // auto-attach sequence can start
-    private volatile boolean pendingAutoAttach;
-
-    // True when shared TEXT is waiting for the page to finish loading so the
-    // composer focus + keyboard sequence can run
-    private volatile boolean pendingAutoFocusText;
-
-    // Drop-injection pipeline: shared file held as base64 until it is fed to
-    // the composer via HTML5 drop events (no + menu, no file chooser race).
-    private volatile String pendingFileB64;
-    private volatile String pendingFileName;
-    private volatile String pendingFileMime;
-
     // Guard so the offline dialog is not shown twice for one failure
     private boolean offlineDialogShowing;
-
-    // Time of the last file injection into the page; suppresses the silent
-    // pendingShareFileUri handover for a few seconds afterwards (the site
-    // re-opens its file input after a programmatic attach — handing the file
-    // over AGAIN then double-attaches it and trips ChatGPT's attach limit).
-    private volatile long lastFileInjectionAt;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -295,7 +260,17 @@ public class MainActivity extends Activity {
                 ChatGptSiteContract::isAllowedHost);
         transferController = new TransferController(
                 this,
-                () -> webview);
+                new TransferController.Host() {
+                    @Override
+                    public WebView getMainWebView() {
+                        return webview;
+                    }
+
+                    @Override
+                    public boolean isInitialLoadComplete() {
+                        return initialLoadComplete;
+                    }
+                });
         popupAuthController = new PopupAuthController(
                 this,
                 rootLayout,
@@ -328,7 +303,7 @@ public class MainActivity extends Activity {
 
                     @Override
                     public boolean openFileChooser(ValueCallback<Uri[]> callback) {
-                        return MainActivity.this.openFileChooser(callback);
+                        return transferController.openFileChooser(callback);
                     }
                 });
         loadingOverlay = findViewById(R.id.loading_overlay);
@@ -451,7 +426,7 @@ public class MainActivity extends Activity {
         if (!restoredFromState) {
             Intent launchIntent = getIntent();
             if (launchIntent != null) {
-                handleShareIntent(launchIntent);
+                transferController.handleShareIntent(launchIntent);
             }
         }
     }
@@ -465,224 +440,15 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        handleShareIntent(intent);
+        transferController.handleShareIntent(intent);
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        // Leaving the app invalidates a pending shared file so it can never
-        // silently hijack a later file-picker invocation.
-        pendingShareFileUri = null;
-    }
-
-    /**
-     * Handle an incoming ACTION_SEND or ACTION_PROCESS_TEXT intent.
-     * Saves the text/file for later injection after the WebView loads.
-     */
-    private void handleShareIntent(Intent intent) {
-        if (intent == null || intent.getAction() == null) return;
-        String action = intent.getAction();
-        Log.i(TAG, "handleShareIntent: action=" + action + ", type=" + intent.getType());
-        markShareActive();
-
-        String sharedText = null;
-        Uri sharedFileUri = null;
-        String sharedFileMime = null;
-
-        if (Intent.ACTION_SEND.equals(action)) {
-            String type = intent.getType();
-            if (type != null && type.startsWith("text/") && intent.getStringExtra(Intent.EXTRA_TEXT) != null) {
-                sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
-            } else {
-                Uri fileUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-                if (fileUri != null) {
-                    sharedFileUri = fileUri;
-                    sharedFileMime = type != null ? type : "*/*";
-                }
-            }
-        } else if (Intent.ACTION_PROCESS_TEXT.equals(action)) {
-            CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT);
-            if (text != null) {
-                sharedText = text.toString();
-            }
+        if (transferController != null) {
+            transferController.onStop();
         }
-
-        if (sharedText != null) {
-            handleSharedText(sharedText);
-        } else if (sharedFileUri != null) {
-            handleSharedFile(sharedFileUri, sharedFileMime);
-        }
-    }
-
-    /**
-     * Handle shared text — copy to clipboard; the user pastes it into the
-     * prompt box. The page is either already loading (cold share-in) or
-     * already open (onNewIntent), so no reload is needed.
-     */
-    private void handleSharedText(String text) {
-        // Do not log shared content in release builds (privacy).
-        if (BuildConfig.EXPERIMENTAL) {
-            Log.i(TAG, "handleSharedText: "
-                    + (text.length() > 80 ? text.substring(0, 80) + "..." : text));
-        }
-        copyToClipboard(text);
-        // Focus the composer AND open the soft keyboard so the user can paste
-        // immediately — but only once the SPA has REALLY rendered its composer
-        // (onPageFinished fires too early: the page steals focus back while
-        // finishing its render, closing the keyboard).
-        if (webview != null && !isFinishing()) {
-            if (initialLoadComplete) {
-                waitForComposerReady(20000, this::settleComposerAfterAutoAttach);
-            } else {
-                pendingAutoFocusText = true;
-            }
-        }
-    }
-
-    private void copyToClipboard(String text) {
-        try {
-            android.content.ClipboardManager clipboard = (android.content.ClipboardManager)
-                    getSystemService(Context.CLIPBOARD_SERVICE);
-            if (clipboard != null) {
-                android.content.ClipData clip = android.content.ClipData.newPlainText("MyChatGPT", text);
-                clipboard.setPrimaryClip(clip);
-                Log.i(TAG, "Text copied to clipboard");
-                // Android 13+ already shows its own "Copied" overlay;
-                // avoid doubling it up.
-                if (Build.VERSION.SDK_INT < 33) {
-                    Toast.makeText(this, "Text copied — paste it into MyChatGPT", Toast.LENGTH_LONG).show();
-                }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "copyToClipboard failed", e);
-        }
-    }
-
-    /**
-     * Handle shared file — copy the file to the app's cache dir, then try to
-     * attach it AUTOMATICALLY: the injected sequence clicks the site's own
-     * "+" button and its "Files" menu item, which makes the site call the
-     * file chooser — and onShowFileChooser hands over this file with zero
-     * user interaction. (Android forbids pushing a file into the page any
-     * other way; the page must ask first.)
-     */
-    private void handleSharedFile(Uri fileUri, String mime) {
-        Log.i(TAG, "handleSharedFile: " + fileUri + " (" + mime + ")");
-
-        new Thread(() -> {
-            try {
-                String fileName = "shared_file_" + System.currentTimeMillis();
-                String originalName = getFileNameFromUri(fileUri);
-                if (originalName != null && !originalName.isEmpty()) {
-                    // The display name comes from the sharing app's provider
-                    // and must never be trusted as a path: sanitize it.
-                    fileName = TransferController.sanitizeSharedFileName(originalName);
-                } else {
-                    String ext = android.webkit.MimeTypeMap.getSingleton()
-                            .getExtensionFromMimeType(mime);
-                    if (ext != null && !ext.isEmpty()) {
-                        fileName += "." + ext;
-                    }
-                }
-
-                File outFile = new File(getCacheDir(), fileName);
-                InputStream in = getContentResolver().openInputStream(fileUri);
-                if (in == null) {
-                    runOnUiThread(() -> Toast.makeText(this,
-                            "Cannot read the shared file", Toast.LENGTH_LONG).show());
-                    return;
-                }
-                java.io.OutputStream out = new java.io.FileOutputStream(outFile);
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) != -1) {
-                    out.write(buf, 0, n);
-                }
-                out.flush();
-                out.close();
-                in.close();
-
-                final Uri sharedUri = androidx.core.content.FileProvider.getUriForFile(this,
-                        getPackageName() + ".fileprovider", outFile);
-
-                // Read the file back as base64 for the drop-injection path
-                // (skipped for huge files — those fall back to manual attach).
-                String b64 = null;
-                if (outFile.length() < 50L * 1024 * 1024) {
-                    byte[] data = java.nio.file.Files.readAllBytes(outFile.toPath());
-                    b64 = android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP);
-                }
-
-                final String fileB64 = b64;
-                final String fileFinalName = fileName;
-                final String fileMime = (mime != null && mime.contains("/")) ? mime
-                        : android.webkit.MimeTypeMap.getSingleton()
-                                .getMimeTypeFromExtension(android.webkit.MimeTypeMap
-                                        .getFileExtensionFromUrl("file://x/" + fileName));
-
-                runOnUiThread(() -> {
-                    pendingShareFileUri = sharedUri;  // manual +->Files fallback
-                    if (fileB64 != null) {
-                        pendingFileB64 = fileB64;
-                        pendingFileName = fileFinalName;
-                        pendingFileMime = fileMime != null ? fileMime : "application/octet-stream";
-                        // Auto-attach WILL run (now or once the page loads) —
-                        // tell the user to wait instead of tapping + manually,
-                        // which would cancel the automatic injection. Text
-                        // shares have their own toast in copyToClipboard.
-                        Toast.makeText(MainActivity.this,
-                                "Please wait — the file will attach automatically",
-                                Toast.LENGTH_LONG).show();
-                    }
-                    if (initialLoadComplete && webview != null) {
-                        if (fileB64 != null) {
-                            // Page already loaded — wait for it to go quiet.
-                            waitForComposerReady(ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS, this::runFileDropSequence);
-                        } else {
-                            // File too large to inject — manual path only.
-                        }
-                    } else {
-                        pendingAutoAttach = true;
-                    }
-                    final WebView wv = webview;
-                    if (wv != null) {
-                        wv.postDelayed(() -> {
-                            if (pendingShareFileUri != null && !isFinishing()) {
-                                Toast.makeText(MainActivity.this,
-                                        "Couldn't attach automatically — tap + and choose Files",
-                                        Toast.LENGTH_LONG).show();
-                            }
-                        }, 25000);
-                    }
-                });
-
-            } catch (Exception e) {
-                Log.e(TAG, "handleSharedFile failed", e);
-                runOnUiThread(() -> Toast.makeText(this,
-                        "Failed to process file: " + e.getMessage(),
-                        Toast.LENGTH_LONG).show());
-            }
-        }).start();
-    }
-
-    private String getFileNameFromUri(Uri uri) {
-        String result = null;
-        if ("content".equals(uri.getScheme())) {
-            try (android.database.Cursor cursor = getContentResolver().query(
-                    uri, null, null, null, null)) {
-                if (cursor != null && cursor.moveToFirst()) {
-                    int idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
-                    if (idx >= 0) {
-                        result = cursor.getString(idx);
-                    }
-                }
-            }
-        }
-        if (result == null) {
-            result = uri.getLastPathSegment();
-        }
-        return result;
     }
 
     /** Wire up the main WebView (the initial instance from the layout, or a
@@ -976,7 +742,7 @@ public class MainActivity extends Activity {
          *  fallback on success, prompts the user on failure. */
         @JavascriptInterface
         public void onFileDropResult(final boolean ok, final String detail) {
-            activity.runOnUiThread(() -> activity.handleFileDropResult(ok, detail));
+            activity.runOnUiThread(() -> activity.transferController.handleFileDropResult(ok, detail));
         }
     }
 
@@ -1033,7 +799,7 @@ public class MainActivity extends Activity {
                                              FileChooserParams fileChooserParams) {
                 // Shared implementation (was previously duplicated in the
                 // popup client, and the two copies had drifted apart).
-                return openFileChooser(callback);
+                return transferController.openFileChooser(callback);
             }
 
             @Override
@@ -1156,7 +922,7 @@ public class MainActivity extends Activity {
                 CrashTracker.reset();
                 CookieManager.getInstance().flush();
                 injectAllOverrides(v);
-                kickPendingSharePipelines();
+                transferController.kickPendingSharePipelines();
                 // If the initial load is already complete (SPA navigation or
                 // the DOM-ready signal already fired), do nothing — no
                 // overlay to hide.
@@ -1194,7 +960,7 @@ public class MainActivity extends Activity {
         // A share arrived while the page was still booting: the DOM signal
         // means the composer is interactive NOW — start the pipeline
         // immediately instead of waiting for onPageFinished.
-        kickPendingSharePipelines();
+        transferController.kickPendingSharePipelines();
     }
 
     /**
@@ -1308,79 +1074,6 @@ public class MainActivity extends Activity {
         if (show) loadingProgressBar.setProgressCompat(0, false);
     }
 
-    /**
-     * Launch the deferred share pipelines (a file or text that arrived while
-     * the page was still loading). Called from BOTH onPageFinished and
-     * onDomReady — whoever comes first wins; the flags are cleared
-     * synchronously on the UI thread before the async wait begins, so a
-     * second invocation is always a no-op (no double attach).
-     */
-    private void kickPendingSharePipelines() {
-        // A shared file arrived while the page was still loading — wait
-        // for the REAL composer, then inject via drop events.
-        if (pendingAutoAttach && pendingFileB64 != null) {
-            pendingAutoAttach = false;
-            waitForComposerReady(ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS, MainActivity.this::runFileDropSequence);
-        } else if (pendingAutoAttach) {
-            pendingAutoAttach = false;  // no injectable payload — manual path
-        }
-        // Shared TEXT arrived while the page was still loading — wait
-        // for the REAL composer, then focus it + open the keyboard.
-        if (pendingAutoFocusText) {
-            pendingAutoFocusText = false;
-            waitForComposerReady(ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS, MainActivity.this::settleComposerAfterAutoAttach);
-        }
-    }
-
-    /**
-     * Wait until the SPA has REALLY loaded — using EVENTS, not timers:
-     *   - the composer element exists, AND
-     *   - the splash is fully rendered (visible greeting wrapper
-     *     [data-splash-headline-option] or mobile suggestion chips — the
-     *     LAST elements to appear, verified against full DOM snapshots;
-     *     presence is not enough on mobile, where the desktop greeting
-     *     wrapper sits CSS-hidden in the DOM — hence the visibility test),
-     *     OR the settle heuristic:
-     *   - no DOM mutation anywhere for 2s (hydration/SPA re-renders mutate
-     *     continuously — the "greening text" phase), AND
-     *   - no fetch/XHR STARTED for 1.5s (network settle; long-lived streams
-     *     that began long ago do not block).
-     * The splash shortcut only matches the EMPTY new-chat state (chips and
-     * greeting never render inside an existing conversation), so shares
-     * into an already-running chat keep the battle-tested quiet heuristic.
-     * The tracker hooks (window.__webgptLoad) are installed at document
-     * start by ChatGptSiteContract.PAGE_OVERRIDES_JS, so the ages are real activity timestamps,
-     * not elapsed-time guesses — fast devices settle fast, slow ones slow.
-     * The deadline is only a safety net, never the primary mechanism.
-     */
-    private void waitForComposerReady(int maxMs, Runnable action) {
-        final WebView wv = webview;
-        if (wv == null || isFinishing()) return;
-        final long deadline = SystemClock.elapsedRealtime() + maxMs;
-        final Runnable[] tick = new Runnable[1];
-        tick[0] = () -> {
-            if (webview == null || isFinishing()) return;
-            webview.evaluateJavascript(
-                    ChatGptSiteContract.COMPOSER_READY_PROBE_JS,
-                    res -> {
-                        // evaluateJavascript delivers strings JSON-quoted:
-                        // strip the surrounding quotes before parsing.
-                        String sig = res == null ? "" : res;
-                        if (sig.length() >= 2 && sig.startsWith("\"") && sig.endsWith("\"")) {
-                            sig = sig.substring(1, sig.length() - 1);
-                        }
-                        if (sig.startsWith("ready")) {
-                            action.run();
-                        } else if (SystemClock.elapsedRealtime() < deadline) {
-                            webview.postDelayed(tick[0], ChatGptSiteContract.COMPOSER_READY_POLL_MS);
-                        } else {
-                            action.run();
-                        }
-                    });
-        };
-        tick[0].run();
-    }
-
     /** onPageFinished fallback (and re-injection after SPA navigations). */
     private void injectAllOverrides(WebView v) {
         v.evaluateJavascript(ChatGptSiteContract.PAGE_OVERRIDES_JS, null);
@@ -1391,91 +1084,6 @@ public class MainActivity extends Activity {
         if (v == webview) {
             v.evaluateJavascript(ChatGptSiteContract.PAGE_READY_WATCHER_JS, null);
         }
-    }
-
-    /**
-     * Feed the pending shared file straight into the site's composer via
-     * HTML5 drop events: the base64 payload is pushed into the page in
-     * chunks, then a File is constructed in JS and dragenter/dragover/drop
-     * are dispatched on the composer. No + menu, no file chooser, none of
-     * the focus-race fragility — this is the same code path the site uses
-     * for real drag-and-drop attachments.
-     */
-    private void runFileDropSequence() {
-        final String b64 = pendingFileB64;
-        final String name = pendingFileName;
-        final String mime = pendingFileMime;
-        if (webview == null || isFinishing() || b64 == null || name == null) return;
-        pendingFileB64 = null;  // consumed
-
-        webview.evaluateJavascript(ChatGptSiteContract.FILE_BUFFER_RESET_JS, null);
-        final int CH = ChatGptSiteContract.FILE_INJECTION_BASE64_CHUNK_SIZE;  // 512KB base64 chunks
-        for (int i = 0; i < b64.length(); i += CH) {
-            final String chunk = b64.substring(i, Math.min(i + CH, b64.length()));
-            // base64 alphabet is JS-string-safe — no escaping needed
-            webview.evaluateJavascript(
-                    ChatGptSiteContract.appendFileBufferJs(chunk),
-                    null);
-        }
-
-        final String safeName = name.replace("\\", "_").replace("'", "\\'");
-        final String safeMime = (mime != null ? mime : "application/octet-stream").replace("'", "");
-        // Mark the injection moment BEFORE dispatching: any file-chooser
-        // opening during/right after the injection is a site re-trigger,
-        // not user intent (see the guard in openFileChooser).
-        lastFileInjectionAt = SystemClock.elapsedRealtime();
-        /* PRIMARY PATH — hidden file input, NO drag events: the composer has
-         * an <input type=file> (the + -> Files flow uses it). Setting
-         * input.files programmatically and firing input+change runs the
-         * site's own attach handler with ZERO drag events — which means the
-         * full-screen drop overlay (triggered by synthetic dragenter/dragover
-         * in earlier builds, with no reliable teardown) is never shown. */
-        String dropJs = ChatGptSiteContract.buildFileDropJs(safeName, safeMime);
-        webview.evaluateJavascript(dropJs, null);
-
-        // Re-assert focus + keyboard AFTER the drop lands: the SPA can still
-        // run a late hydration pass that steals focus; several staggered
-        // re-assertions keep the composer focused (and the attachment
-        // committed) through it.
-        webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.DROP_REFOCUS_DELAY_1_MS);
-        webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.DROP_REFOCUS_DELAY_2_MS);
-        webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.DROP_REFOCUS_DELAY_3_MS);
-        webview.postDelayed(this::showKeyboardForComposer, ChatGptSiteContract.DROP_KEYBOARD_DELAY_1_MS);
-        webview.postDelayed(this::showKeyboardForComposer, ChatGptSiteContract.DROP_KEYBOARD_DELAY_2_MS);
-    }
-
-    /** Bridge callback: the page accepted (or rejected) the injected drop. */
-    private void handleFileDropResult(boolean ok, String detail) {
-        Log.i(TAG, "drop result: " + (ok ? "ok" : "failed") + " " + detail);
-        if (ok) {
-            // Attached — clear the manual-fallback URI so it can never hijack
-            // a later file-chooser invocation.
-            pendingShareFileUri = null;
-            // Verify 3s later that the attachment is STILL visible in the
-            // composer (catches the site discarding it — e.g. an attach-limit
-            // rejection — right after accepting it).
-            final String checkName = pendingFileName;
-            webview.postDelayed(() -> verifyAttachmentVisible(checkName), ChatGptSiteContract.ATTACHMENT_VERIFY_DELAY_MS);
-        } else if (pendingShareFileUri != null) {
-            Toast.makeText(this,
-                    "Couldn't attach automatically — tap + and choose Files",
-                    Toast.LENGTH_LONG).show();
-        }
-    }
-
-    /** Diagnostic: does the composer still show an attachment chip? */
-    private void verifyAttachmentVisible(String name) {
-        WebView wv = webview;
-        if (wv == null || isFinishing() || name == null) return;
-        final String jsName = name.replace("\\", "_").replace("'", "\\'");
-        String js = ChatGptSiteContract.buildAttachmentVisibilityJs(jsName);
-        wv.evaluateJavascript(js, res -> {
-            String r = res == null ? "" : res;
-            if (r.length() >= 2 && r.startsWith("\"") && r.endsWith("\"")) {
-                r = r.substring(1, r.length() - 1);
-            }
-            Log.i(TAG, "attach check: " + r);
-        });
     }
 
     /**
@@ -1532,42 +1140,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_FILE_CHOOSER) {
-            if (filePathCallback == null) {
-                return;
-            }
-            if (resultCode != RESULT_OK) {
-                if (pendingCameraFile != null && pendingCameraFile.exists()) {
-                    pendingCameraFile.delete();
-                }
-                pendingCameraUri = null;
-                pendingCameraFile = null;
-                filePathCallback.onReceiveValue(null);
-                filePathCallback = null;
-                return;
-            }
-
-            Uri[] results = null;
-            if (data == null || (data.getData() == null && data.getClipData() == null)) {
-                if (pendingCameraFile != null && pendingCameraFile.exists() && pendingCameraFile.length() > 0) {
-                    results = new Uri[]{pendingCameraUri};
-                    Log.i(TAG, "Camera capture result: " + pendingCameraUri);
-                }
-            } else {
-                android.content.ClipData clipData = data.getClipData();
-                if (clipData != null) {
-                    results = new Uri[clipData.getItemCount()];
-                    for (int i = 0; i < clipData.getItemCount(); i++) {
-                        results[i] = clipData.getItemAt(i).getUri();
-                    }
-                } else if (data.getData() != null) {
-                    results = new Uri[]{data.getData()};
-                }
-            }
-            filePathCallback.onReceiveValue(results);
-            filePathCallback = null;
-            pendingCameraUri = null;
-            pendingCameraFile = null;
+        if (transferController != null) {
+            transferController.onActivityResult(requestCode, resultCode, data);
         }
     }
 
@@ -1649,177 +1223,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Shared file-chooser implementation (previously duplicated in both clients). */
-    private boolean openFileChooser(ValueCallback<Uri[]> callback) {
-        if (filePathCallback != null) {
-            filePathCallback.onReceiveValue(null);
-        }
-        filePathCallback = callback;
-
-        // If we have a pending shared file, return it immediately — UNLESS
-        // we injected a file moments ago: the site re-opens its file input
-        // right after a programmatic attach, and handing the same file over
-        // again double-attaches it (which trips ChatGPT's attach limit and
-        // makes the attachment disappear).
-        if (pendingShareFileUri != null
-                && SystemClock.elapsedRealtime() - lastFileInjectionAt < ChatGptSiteContract.FILE_CHOOSER_RETRIGGER_GUARD_MS) {
-            Log.i(TAG, "ignoring site re-trigger after injection");
-            filePathCallback.onReceiveValue(null);
-            filePathCallback = null;
-            return true;
-        }
-        if (pendingShareFileUri != null) {
-            Log.i(TAG, "onShowFileChooser: returning pending shared file " + pendingShareFileUri);
-            filePathCallback.onReceiveValue(new Uri[]{pendingShareFileUri});
-            filePathCallback = null;
-            pendingShareFileUri = null;
-            Log.i(TAG, "auto-attach: file handed to page");
-            // The site only COMMITS a pending attachment while the composer
-            // is focused shortly after the file lands — unattended, it
-            // silently drops the file about a second later (users had to tap
-            // the text box within that window). Focus the composer
-            // programmatically, several times, inside that window.
-            webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_1_MS);
-            webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_2_MS);
-            webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_3_MS);
-            webview.postDelayed(this::settleComposerAfterAutoAttach, ChatGptSiteContract.AUTO_ATTACH_FOCUS_DELAY_4_MS);
-            return true;
-        }
-
-        // Because the app declares CAMERA in the manifest, Android requires
-        // the runtime permission to be HELD before a capture intent is
-        // launched — otherwise the camera app fails silently. Ask first,
-        // then show the chooser from the permission result.
-        if (!hasPermission(android.Manifest.permission.CAMERA)) {
-            cameraPermForChooser = true;
-            ActivityCompat.requestPermissions(this,
-                    new String[]{android.Manifest.permission.CAMERA}, REQUEST_CAMERA_PERM);
-            return true;
-        }
-        launchFileChooserNow(true);
-        return true;
-    }
-
-    /** Launch the system file chooser; include the camera option when usable. */
-    private void launchFileChooserNow(boolean includeCamera) {
-        Intent contentIntent = new Intent(Intent.ACTION_GET_CONTENT);
-        contentIntent.addCategory(Intent.CATEGORY_OPENABLE);
-        contentIntent.setType("*/*");
-        contentIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-
-        Intent cameraIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-        boolean cameraReady = false;
-        if (includeCamera) {
-            try {
-                File cameraFile = new File(getCacheDir(),
-                        "camera_capture_" + System.currentTimeMillis() + ".jpg");
-                Uri cameraUri = androidx.core.content.FileProvider.getUriForFile(
-                        this, getPackageName() + ".fileprovider", cameraFile);
-                cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri);
-                // Some camera apps re-read the capture for EXIF rotation or
-                // thumbnails and crash on a missing read grant — grant both.
-                cameraIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                pendingCameraUri = cameraUri;
-                pendingCameraFile = cameraFile;
-                cameraReady = true;
-            } catch (Exception e) {
-                Log.e(TAG, "Camera setup failed", e);
-                pendingCameraUri = null;
-                pendingCameraFile = null;
-            }
-        }
-
-        Intent chooser = Intent.createChooser(contentIntent, "Select file");
-        if (cameraReady) {
-            chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{cameraIntent});
-        }
-        try {
-            startActivityForResult(chooser, REQUEST_FILE_CHOOSER);
-        } catch (Exception e) {
-            Log.e(TAG, "File chooser failed", e);
-            if (filePathCallback != null) {
-                filePathCallback.onReceiveValue(null);
-                filePathCallback = null;
-            }
-        }
-    }
-
-    /**
-     * Nudge the composer after the auto-attached file is handed to the page:
-     * send Escape (closes the leftover "+" menu) and focus the prompt box.
-     * This reproduces the user tap that the site needs to commit the
-     * attachment within its ~1s window.
-     */
-    /**
-     * Nudge the composer after the auto-attached file is handed to the page:
-     * simulate the user's tap on the prompt box (pointer/mouse sequence +
-     * focus). NO Escape key — Escape dismisses the pending attachment, which
-     * is exactly how round 5 broke file sharing. The tap is what the site
-     * needs to commit the attachment within its ~1s window.
-     */
-    /**
-     * Mark a 6-second window during which the focus guard is bypassed, so
-     * the share pipeline's own .focus() calls can land and commit the
-     * attachment. Without this, ChatGptSiteContract.FOCUS_GUARD_JS would block the share's own
-     * focus() and the attachment would never land.
-     *
-     * The timestamp is set in THREE places so all share entry points are
-     * covered:
-     *  - Here, Java-side in handleShareIntent — runs via evaluateJavascript
-     *    on the JS thread, which lands before the page's resume-time
-     *    visibilitychange handler can fire, so there's no flicker on
-     *    share-resume (the share's own focus() wins the race).
-     *  - Inside settleComposerAfterAutoAttach's JS string — covers cold
-     *    start (no resume event fires on cold start) and any staggered
-     *    re-focus attempts the SPA makes later.
-     *  - Inside runFileDropSequence's dropJs string — same coverage for
-     *    the file-drop pipeline.
-     *
-     * Auto-expires (6s), so it can't get stuck on. If a share ever
-     * misfires the user just waits 6 seconds and the guard re-engages.
-     */
-    private void markShareActive() {
-        WebView wv = webview;
-        if (wv == null || isFinishing()) return;
-        wv.evaluateJavascript(ChatGptSiteContract.MARK_SHARE_ACTIVE_JS, null);
-    }
-
-    /**
-     * Focus the composer so a pending attachment commits / pasted text lands.
-     * FOCUS ONLY — no pointer/click dispatch: the old selector
-     * ([data-testid*=composer]) matched the + ATTACH BUTTON in the current
-     * ChatGPT UI, so the settle code was clicking + instead of focusing the
-     * text box (opening menus, never activating the composer). The selector
-     * list below deliberately matches only editable elements.
-     */
-    private void settleComposerAfterAutoAttach() {
-        WebView wv = webview;
-        if (wv == null || isFinishing()) return;
-        String js = ChatGptSiteContract.COMPOSER_FOCUS_JS;
-        wv.evaluateJavascript(js, null);
-        // Programmatic JS focus does not reliably summon the Android IME —
-        // the site only commits a pending attachment while the composer is
-        // FOCUSED, which on a touch device means the keyboard being up.
-        showKeyboardForComposer();
-    }
-
-    /** Show the soft keyboard for the WebView's composer. */
-    private void showKeyboardForComposer() {
-        try {
-            WebView wv = webview;
-            if (wv == null || isFinishing()) return;
-            wv.requestFocus();
-            InputMethodManager imm = (InputMethodManager)
-                    getSystemService(Context.INPUT_METHOD_SERVICE);
-            if (imm != null) {
-                imm.showSoftInput(wv, InputMethodManager.SHOW_IMPLICIT);
-            }
-        } catch (Throwable t) {
-            Log.e(TAG, "showKeyboardForComposer failed", t);
-        }
-    }
-
     /** Offline dialog with retry (main-frame load failures). */
     private void showOfflineDialog() {
         runOnUiThread(() -> {
@@ -1884,18 +1287,6 @@ public class MainActivity extends Activity {
             pendingWebPermissionRequest = null;
             if (req != null) {
                 grantWebPermissionRequest(req);
-            }
-        } else if (requestCode == REQUEST_CAMERA_PERM) {
-            // File chooser deferred until the camera permission was resolved:
-            // show it now — with the camera option only if permission was
-            // granted (works with "Ask every time" too).
-            if (cameraPermForChooser) {
-                cameraPermForChooser = false;
-                boolean granted = grantResults.length > 0
-                        && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
-                if (filePathCallback != null) {
-                    launchFileChooserNow(granted);
-                }
             }
         }
     }
@@ -2125,8 +1516,6 @@ public class MainActivity extends Activity {
             }
         }
         webview = null;
-        filePathCallback = null;
-        pendingShareFileUri = null;
         super.onDestroy();
     }
 
