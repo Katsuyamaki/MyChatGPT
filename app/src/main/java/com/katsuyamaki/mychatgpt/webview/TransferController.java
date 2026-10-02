@@ -37,6 +37,8 @@ public final class TransferController {
 
     private static final String TAG = "MyChatGPTTransfer";
     public static final int REQUEST_STORAGE_PERM = 1003;
+    public static final int REQUEST_FILE_CHOOSER = 54321;
+    public static final int REQUEST_CAMERA_PERM = 1005;
 
     public interface Host {
         WebView getMainWebView();
