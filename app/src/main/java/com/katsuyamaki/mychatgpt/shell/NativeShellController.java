@@ -3,6 +3,7 @@ package com.katsuyamaki.mychatgpt.shell;
 import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
@@ -32,13 +33,13 @@ public final class NativeShellController {
 
     private static final String PREFS = "mychatgpt_native_shell";
     private static final String KEY_BACKDROP = "backdrop_opacity_percent";
-    private static final String KEY_UI_OPACITY = "webview_ui_opacity_percent";
+    private static final String KEY_SURFACE_OPACITY = "chatgpt_surface_opacity_percent";
     private static final String KEY_CORNER = "controls_corner";
     private static final String KEY_UI_SCALE = "ui_scale_percent";
     private static final String KEY_TEXT_SCALE = "text_scale_percent";
 
     private static final int DEFAULT_BACKDROP = 30;
-    private static final int DEFAULT_UI_OPACITY = 100;
+    private static final int DEFAULT_SURFACE_OPACITY = 0;
     private static final int DEFAULT_UI_SCALE = 100;
     private static final int DEFAULT_TEXT_SCALE = 100;
 
@@ -71,12 +72,12 @@ public final class NativeShellController {
     private LinearLayout panel;
     private TextView tuneButton;
     private TextView backdropLabel;
-    private TextView uiOpacityLabel;
+    private TextView surfaceOpacityLabel;
     private TextView uiScaleLabel;
     private TextView textScaleLabel;
 
     private int backdropPercent;
-    private int uiOpacityPercent;
+    private int surfaceOpacityPercent;
     private int corner;
     private int uiScalePercent;
     private int textScalePercent;
@@ -93,7 +94,7 @@ public final class NativeShellController {
         this.prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
 
         backdropPercent = clamp(prefs.getInt(KEY_BACKDROP, DEFAULT_BACKDROP), 0, 100);
-        uiOpacityPercent = clamp(prefs.getInt(KEY_UI_OPACITY, DEFAULT_UI_OPACITY), 0, 100);
+        surfaceOpacityPercent = clamp(prefs.getInt(KEY_SURFACE_OPACITY, DEFAULT_SURFACE_OPACITY), 0, 100);
         corner = clamp(prefs.getInt(KEY_CORNER, CORNER_TOP_RIGHT), 0, 3);
         uiScalePercent = clamp(
                 prefs.getInt(KEY_UI_SCALE, DEFAULT_UI_SCALE),
@@ -113,8 +114,11 @@ public final class NativeShellController {
     public void applyToMainWebView(WebView webView) {
         if (webView == null) return;
         webView.setBackgroundColor(Color.TRANSPARENT);
-        webView.setAlpha(uiOpacityPercent / 100f);
-        webView.getSettings().setTextZoom(textScalePercent);
+        // Keep the WebView itself fully opaque. Like Termux Launcher's wallpaper mode,
+        // transparency belongs to painted background surfaces, not View alpha; fading
+        // the whole WebView forces expensive full-surface compositing on every edit.
+        if (webView.getAlpha() != 1f) webView.setAlpha(1f);
+        applyTextScale(webView);
         applyUiScale(webView);
     }
 
@@ -123,8 +127,6 @@ public final class NativeShellController {
         webView.setBackgroundColor(Color.TRANSPARENT);
         webView.evaluateJavascript(ChatGptSiteContract.WALLPAPER_TRANSPARENCY_JS, null);
         applyUiScale(webView);
-        webView.getSettings().setTextZoom(textScalePercent);
-        webView.setAlpha(uiOpacityPercent / 100f);
     }
 
     public void onConfigurationChanged() {
@@ -215,11 +217,11 @@ public final class NativeShellController {
         backdropSlider.setProgress(backdropPercent);
         panel.addView(backdropSlider, fullWidthWrap());
 
-        uiOpacityLabel = makeLabel("", 12f);
-        panel.addView(uiOpacityLabel);
+        surfaceOpacityLabel = makeLabel("", 12f);
+        panel.addView(surfaceOpacityLabel);
         SeekBar opacitySlider = new SeekBar(activity);
         opacitySlider.setMax(100);
-        opacitySlider.setProgress(uiOpacityPercent);
+        opacitySlider.setProgress(surfaceOpacityPercent);
         panel.addView(opacitySlider, fullWidthWrap());
 
         uiScaleLabel = makeLabel("", 12f);
@@ -301,9 +303,9 @@ public final class NativeShellController {
             public void onProgressChanged(
                     SeekBar seekBar, int progress, boolean fromUser) {
                 if (!fromUser) return;
-                uiOpacityPercent = progress;
-                prefs.edit().putInt(KEY_UI_OPACITY, uiOpacityPercent).apply();
-                applyUiOpacity();
+                surfaceOpacityPercent = progress;
+                prefs.edit().putInt(KEY_SURFACE_OPACITY, surfaceOpacityPercent).apply();
+                applyBackdrop();
                 updateLabels();
             }
         });
@@ -328,15 +330,14 @@ public final class NativeShellController {
 
         resetTransparency.setOnClickListener(v -> {
             backdropPercent = DEFAULT_BACKDROP;
-            uiOpacityPercent = DEFAULT_UI_OPACITY;
+            surfaceOpacityPercent = DEFAULT_SURFACE_OPACITY;
             prefs.edit()
                     .putInt(KEY_BACKDROP, backdropPercent)
-                    .putInt(KEY_UI_OPACITY, uiOpacityPercent)
+                    .putInt(KEY_SURFACE_OPACITY, surfaceOpacityPercent)
                     .apply();
             backdropSlider.setProgress(backdropPercent);
-            opacitySlider.setProgress(uiOpacityPercent);
+            opacitySlider.setProgress(surfaceOpacityPercent);
             applyBackdrop();
-            applyUiOpacity();
             updateLabels();
         });
 
@@ -396,15 +397,22 @@ public final class NativeShellController {
         if (clamped == textScalePercent) return;
         textScalePercent = clamped;
         prefs.edit().putInt(KEY_TEXT_SCALE, textScalePercent).apply();
-        WebView webView = host.getMainWebView();
-        if (webView != null) {
-            webView.getSettings().setTextZoom(textScalePercent);
-        }
+        applyTextScale(host.getMainWebView());
         updateLabels();
     }
 
     private void resetTextScale() {
         setTextScale(DEFAULT_TEXT_SCALE);
+    }
+
+    private void applyTextScale(WebView webView) {
+        if (webView == null) return;
+        // setTextZoom can trigger a full text re-layout. New WebViews start at 100,
+        // so the common 100% case is deliberately a no-op, and unchanged values are
+        // never re-applied from onPageFinished/configuration callbacks.
+        if (webView.getSettings().getTextZoom() != textScalePercent) {
+            webView.getSettings().setTextZoom(textScalePercent);
+        }
     }
 
     private void applyUiScale(WebView webView) {
@@ -423,16 +431,42 @@ public final class NativeShellController {
     }
 
     private void applyBackdrop() {
-        int alpha = Math.round(255f * (backdropPercent / 100f));
-        root.setBackgroundColor(Color.argb(alpha, 0, 0, 0));
+        // Same composition strategy used by the Termux Launcher fork: keep the
+        // content View at alpha=1 and paint translucent ARGB surfaces behind it.
+        int backdropAlpha = Math.round(255f * (backdropPercent / 100f));
+        int backdrop = Color.argb(backdropAlpha, 0, 0, 0);
+
+        int base = isDarkMode() ? Color.rgb(13, 13, 13) : Color.WHITE;
+        int surfaceAlpha = Math.round(255f * (surfaceOpacityPercent / 100f));
+        int surface = Color.argb(
+                surfaceAlpha,
+                Color.red(base),
+                Color.green(base),
+                Color.blue(base));
+
+        root.setBackgroundColor(compositeOver(surface, backdrop));
     }
 
-    private void applyUiOpacity() {
-        WebView webView = host.getMainWebView();
-        if (webView != null) {
-            webView.setVisibility(View.VISIBLE);
-            webView.setAlpha(uiOpacityPercent / 100f);
-        }
+    private boolean isDarkMode() {
+        int night = activity.getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK;
+        return night == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    private static int compositeOver(int foreground, int background) {
+        float fa = Color.alpha(foreground) / 255f;
+        float ba = Color.alpha(background) / 255f;
+        float oa = fa + ba * (1f - fa);
+        if (oa <= 0f) return Color.TRANSPARENT;
+
+        float bgWeight = ba * (1f - fa);
+        int r = Math.round((Color.red(foreground) * fa
+                + Color.red(background) * bgWeight) / oa);
+        int g = Math.round((Color.green(foreground) * fa
+                + Color.green(background) * bgWeight) / oa);
+        int b = Math.round((Color.blue(foreground) * fa
+                + Color.blue(background) * bgWeight) / oa);
+        return Color.argb(Math.round(oa * 255f), r, g, b);
     }
 
     private void cycleCorner() {
@@ -518,8 +552,8 @@ public final class NativeShellController {
         if (backdropLabel != null) {
             backdropLabel.setText("Backdrop dim: " + backdropPercent + "%");
         }
-        if (uiOpacityLabel != null) {
-            uiOpacityLabel.setText("ChatGPT UI opacity: " + uiOpacityPercent + "%");
+        if (surfaceOpacityLabel != null) {
+            surfaceOpacityLabel.setText("ChatGPT surface opacity: " + surfaceOpacityPercent + "%");
         }
         if (uiScaleLabel != null) {
             uiScaleLabel.setText("UI scale: " + uiScalePercent + "%");
