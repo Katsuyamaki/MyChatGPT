@@ -655,7 +655,14 @@ public final class ChatGptSiteContract {
             "if(type!=='insertFromPaste'&&type!=='insertText')return;" +
             "var text='';try{if(e.dataTransfer)text=e.dataTransfer.getData('text/plain')||'';}catch(_){}" +
             "if(!text&&typeof e.data==='string')text=e.data;" +
-            "emit('beforeinput_capture',e,text.length);" +
+            "var len=text.length;emit('beforeinput_capture',e,len);" +
+            "setTimeout(function(){emit('beforeinput_post_task',e,len);},0);" +
+            "}catch(_){}},true);" +
+            "document.addEventListener('input',function(e){try{" +
+            "var type=String(e.inputType||'');" +
+            "if(type!=='insertFromPaste'&&type!=='insertText')return;" +
+            "var len=(typeof e.data==='string')?e.data.length:0;" +
+            "emit('input_capture',e,len);" +
             "}catch(_){}},true);" +
             "}catch(e){}})();";
 
