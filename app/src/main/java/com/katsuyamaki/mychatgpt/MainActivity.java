@@ -313,6 +313,7 @@ public class MainActivity extends Activity {
                         loadingStateController.resetInitialLoad();
                         mainWebViewController.forceReloadCurrent(webview, current);
                     }
+
                 });
         loadingStateController.initializePresentation();
 
@@ -433,6 +434,10 @@ public class MainActivity extends Activity {
                 WebViewCompat.addDocumentStartJavaScript(
                         webView,
                         ChatGptSiteContract.WALLPAPER_TRANSPARENCY_JS,
+                        java.util.Collections.singleton("*"));
+                WebViewCompat.addDocumentStartJavaScript(
+                        webView,
+                        ChatGptSiteContract.LARGE_PASTE_ACCELERATOR_JS,
                         java.util.Collections.singleton("*"));
                 // Registered AFTER ChatGptSiteContract.PAGE_OVERRIDES_JS on purpose: the ready
                 // watcher's settle fallback reads window.__webgptLoad, which
