@@ -55,6 +55,20 @@ public final class ChatGptSiteContract {
                 && (host.equals("chatgpt.com") || host.endsWith(".chatgpt.com"));
     }
 
+    /** True only for http(s) URLs on a ChatGPT-owned host. */
+    public static boolean isChatGptWebUrl(String url) {
+        try {
+            if (url == null) return false;
+            Uri uri = Uri.parse(url);
+            String scheme = uri.getScheme();
+            return ("https".equalsIgnoreCase(scheme)
+                    || "http".equalsIgnoreCase(scheme))
+                    && isChatGptHost(uri.getHost());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     /**
      * Page overrides, installed at DOCUMENT START in EVERY frame (see
      * installDocumentStartOverrides). Because document-start scripts run
@@ -566,6 +580,30 @@ public final class ChatGptSiteContract {
         }
         return false;
     }
+
+
+    /**
+     * Validated wallpaper-passthrough page treatment from MyChatGPT-Prototype
+     * v0.3. Keep ChatGPT-specific surface selectors here rather than in native
+     * shell code.
+     */
+    public static final String WALLPAPER_TRANSPARENCY_JS =
+            "(function(){try{" +
+            "var css='html,body,#__next,main,main>div,[data-nextjs-scroll-focus-boundary]," +
+            "[class*=\\'bg-token-main-surface-primary\\']," +
+            "[class*=\\'bg-token-main-surface-secondary\\']," +
+            "[class*=\\'bg-token-sidebar-surface-primary\\']{" +
+            "background:transparent!important;background-color:transparent!important;}" +
+            "html,body{min-height:100%!important;}';" +
+            "var id='mychatgpt-wallpaper-css';" +
+            "var d=document;var root=d.documentElement;if(!root)return;" +
+            "var style=d.getElementById(id);" +
+            "if(!style){style=d.createElement('style');style.id=id;" +
+            "(d.head||root).appendChild(style);}" +
+            "style.textContent=css;" +
+            "root.style.setProperty('background-color','transparent','important');" +
+            "if(d.body)d.body.style.setProperty('background-color','transparent','important');" +
+            "}catch(e){}})();";
 
     // Java-side polling / attachment timings inherited from WebGPT's
     // ChatGPT-specific integration. Keep these together with the selectors

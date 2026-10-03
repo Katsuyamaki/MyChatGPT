@@ -42,6 +42,7 @@ public final class MainWebViewController {
     private final Map<String, String> requestHeaders;
     private final String userAgent;
     private final HostPolicy hostPolicy;
+    private WebView forceReloadTarget;
 
     public MainWebViewController(Activity activity,
                                  ViewGroup rootLayout,
@@ -108,6 +109,45 @@ public final class MainWebViewController {
 
     public void loadUrl(WebView webView, String url) {
         webView.loadUrl(url, requestHeaders);
+    }
+
+    /**
+     * Strong user-requested refresh for stale SPA state. The caller supplies
+     * an already-validated ChatGPT URL. Use LOAD_NO_CACHE for this navigation,
+     * then restore the normal inherited cache policy on completion or timeout.
+     */
+    public void forceReloadCurrent(WebView webView, String url) {
+        if (webView == null || url == null) return;
+        try {
+            webView.stopLoading();
+            webView.getSettings().setCacheMode(WebSettings.LOAD_NO_CACHE);
+            forceReloadTarget = webView;
+            loadUrl(webView, url);
+            webView.postDelayed(() -> restoreDefaultCachePolicy(webView), 15000L);
+        } catch (Throwable t) {
+            Log.e(TAG, "forceReloadCurrent failed", t);
+            restoreDefaultCachePolicy(webView);
+        }
+    }
+
+    /** Call when a main-frame load finishes or fails. */
+    public void onMainFrameLoadSettled(WebView webView) {
+        if (forceReloadTarget == webView) {
+            restoreDefaultCachePolicy(webView);
+        }
+    }
+
+    private void restoreDefaultCachePolicy(WebView webView) {
+        if (webView == null) return;
+        try {
+            if (forceReloadTarget == webView) {
+                webView.getSettings().setCacheMode(WebSettings.LOAD_DEFAULT);
+                forceReloadTarget = null;
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "restore cache policy failed", t);
+            if (forceReloadTarget == webView) forceReloadTarget = null;
+        }
     }
 
     /**
@@ -250,6 +290,7 @@ public final class MainWebViewController {
 
     public void destroyMainWebView(WebView webView) {
         if (webView == null) return;
+        if (forceReloadTarget == webView) forceReloadTarget = null;
         try {
             rootLayout.removeView(webView);
             webView.removeAllViews();

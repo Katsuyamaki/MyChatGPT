@@ -41,14 +41,21 @@
         <item name="colorOutline">@color/md_outline</item>
         <item name="colorOutlineVariant">@color/md_outlineVariant</item>
 
-        <!-- Status bar: explicit light/dark surface + matching icon tint.
-             Material3 DayNight sets a slightly-off translucent color by
-             default (e.g. #101418 in dark, #F7F9FF in light) which clashes
-             with the actual app surface. Pin to pure #000000/#fcfcfc. -->
-        <item name="android:statusBarColor">@color/status_bar_bg</item>
-        <item name="android:navigationBarColor">@color/status_bar_bg</item>
-        <item name="android:windowLightStatusBar">@bool/window_light_status_bar</item>
-        <item name="android:windowLightNavigationBar">@bool/window_light_status_bar</item>
+        <!-- Wallpaper passthrough: validated prototype behavior. The window
+             itself is NOT translucent over the launcher; Android draws the
+             system wallpaper behind this app. Loading overlay remains opaque
+             because android:colorBackground is still the Material day/night
+             token above. -->
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowShowWallpaper">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 
     <!--

@@ -15,6 +15,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.Canvas;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
@@ -63,6 +64,7 @@ import com.katsuyamaki.mychatgpt.webview.WebViewManagerDialog;
 import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
 import com.katsuyamaki.mychatgpt.webview.WelcomeDialog;
 import com.katsuyamaki.mychatgpt.site.ChatGptSiteContract;
+import com.katsuyamaki.mychatgpt.shell.NativeShellController;
 import com.google.android.material.progressindicator.LinearProgressIndicator;
 
 import java.io.File;
@@ -86,6 +88,7 @@ public class MainActivity extends Activity {
     private MainWebViewController mainWebViewController;
     private PopupAuthController popupAuthController;
     private TransferController transferController;
+    private NativeShellController nativeShellController;
 
     // Pending WebView permission request (camera/mic) while the OS dialog is up
     private PermissionRequest pendingWebPermissionRequest;
@@ -291,12 +294,26 @@ public class MainActivity extends Activity {
                 });
         loadingStateController =
                 new LoadingStateController(this, rootLayout);
+        nativeShellController = new NativeShellController(
+                this,
+                (FrameLayout) rootLayout,
+                new NativeShellController.Host() {
+                    @Override
+                    public WebView getMainWebView() {
+                        return webview;
+                    }
 
-        // Keep the window/root/system-bar background work Activity-owned:
-        // these surfaces outlive the loading overlay and later become part of
-        // the native shell/wallpaper layer.
-        applyBackgroundColors();
-        applySystemBarColors();
+                    @Override
+                    public void forceReloadCurrentChat() {
+                        if (webview == null || mainWebViewController == null) return;
+                        String current = webview.getUrl();
+                        if (!ChatGptSiteContract.isChatGptWebUrl(current)) {
+                            current = ChatGptSiteContract.MAIN_URL;
+                        }
+                        loadingStateController.resetInitialLoad();
+                        mainWebViewController.forceReloadCurrent(webview, current);
+                    }
+                });
         loadingStateController.initializePresentation();
 
         // Wire the WebView up (initial setup; recreated in place if the
@@ -385,12 +402,14 @@ public class MainActivity extends Activity {
     /** Wire up the main WebView (the initial instance from the layout, or a
      *  fresh one after a renderer crash). */
     private void setupMainWebView(WebView mainWebView) {
-        int backgroundColor = isDarkMode() ? 0xFF0D0D0D : 0xFFFFFFFF;
         mainWebViewController.configureMainWebView(
                 mainWebView,
-                backgroundColor,
+                Color.TRANSPARENT,
                 createWebBridge(mainWebView),
                 "AndroidBridge");
+        if (nativeShellController != null) {
+            nativeShellController.applyToMainWebView(mainWebView);
+        }
         setupClients(mainWebView);
         transferController.setupDownloads(mainWebView);
         setupImageContextMenu(mainWebView);
@@ -411,6 +430,10 @@ public class MainActivity extends Activity {
             if (WebViewUtil.isSupported()) {
                 WebViewCompat.addDocumentStartJavaScript(
                         webView, ChatGptSiteContract.PAGE_OVERRIDES_JS, java.util.Collections.singleton("*"));
+                WebViewCompat.addDocumentStartJavaScript(
+                        webView,
+                        ChatGptSiteContract.WALLPAPER_TRANSPARENCY_JS,
+                        java.util.Collections.singleton("*"));
                 // Registered AFTER ChatGptSiteContract.PAGE_OVERRIDES_JS on purpose: the ready
                 // watcher's settle fallback reads window.__webgptLoad, which
                 // the overrides script installs — document-start scripts run
@@ -425,87 +448,6 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable t) {
             Log.e(TAG, "addDocumentStartJavaScript failed", t);
-        }
-    }
-
-    /**
-     * Solid WebView background matching the current theme (pattern from the
-     * AI Studio webclient, which pins #121212 for the same reason). Only the
-     * pre-paint flash depends on this — the page itself always covers it
-     * once rendered, so pure cosmetic continuity during navigations.
-     */
-    private void applyWebViewBackground(WebView w) {
-        w.setBackgroundColor(isDarkMode() ? 0xFF0D0D0D : 0xFFFFFFFF);
-    }
-
-    /**
-     * Apply the same dark-grey / white background to the {@code Window} AND
-     * to {@code rootLayout} so the brief GPU-surface-teardown flash on
-     * resume from task manager shows the matching color instead of the
-     * pure-black window background bleeding through a transparent
-     * rootLayout. Without this, the activity theme's
-     * {@code ?android:attr/colorBackground} (#000000 in dark mode) is what
-     * the user sees during the ~1-frame gap between the window being
-     * re-attached and the WebView repainting — which is exactly the
-     * "brief black flash" Bug 2 report. The LoadingStateController PixelCopy resume overlay is a stronger mask when it succeeds, but it is a
-     * race (the snapshot is GONE if PixelCopy's async callback hasn't
-     * fired by the time {@code onWindowFocusChanged(true)} runs — see
-     * toast "snapshot: no overlay to fade (vis=8)"). This background-color
-     * fallback is the <em>reliable</em> primary defense; the snapshot
-     * overlay remains a nice-to-have on top.
-     */
-    private void applyBackgroundColors() {
-        int bg = isDarkMode() ? 0xFF0D0D0D : 0xFFFFFFFF;
-        try {
-            getWindow().setBackgroundDrawable(new ColorDrawable(bg));
-        } catch (Throwable t) {
-            Log.e(TAG, "window setBackgroundDrawable threw", t);
-        }
-        if (rootLayout != null) {
-            rootLayout.setBackgroundColor(bg);
-        }
-    }
-
-    /**
-     * Re-applies the status / navigation bar colors and the light/dark icon
-     * appearance from the CURRENT configuration. AppTheme sets all of these
-     * once at window creation; because MainActivity declares uiMode in
-     * configChanges (to keep the WebView and its conversation alive across
-     * system dark-mode toggles), the activity is NOT recreated when the mode
-     * flips — so the themed values go stale: the website adapts by itself
-     * (prefers-color-scheme in the WebView) but the bars stayed in the old
-     * mode. Called from onCreate and from every onConfigurationChanged; it
-     * reads the SAME day/night resources the theme uses
-     * (status_bar_bg / window_light_status_bar), so it is an idempotent no-op
-     * when the mode did not change. Forks that keep the full configChanges
-     * list need this call in their onConfigurationChanged too.
-     */
-    @SuppressWarnings("deprecation")
-    private void applySystemBarColors() {
-        try {
-            int barColor;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                barColor = getResources().getColor(R.color.status_bar_bg, getTheme());
-            } else {
-                // 1-arg getColor is the only option below M.
-                barColor = getResources().getColor(R.color.status_bar_bg);
-            }
-            boolean lightBars = getResources().getBoolean(R.bool.window_light_status_bar);
-            getWindow().setStatusBarColor(barColor);
-            getWindow().setNavigationBarColor(barColor);
-            View decor = getWindow().getDecorView();
-            int vis = decor.getSystemUiVisibility();
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                if (lightBars) vis |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                else vis &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (lightBars) vis |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-                else vis &= ~View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-            }
-            decor.setSystemUiVisibility(vis);
-        } catch (Throwable t) {
-            Log.e(TAG, "applySystemBarColors failed", t);
         }
     }
 
@@ -576,6 +518,7 @@ public class MainActivity extends Activity {
                                         String description, String failingUrl) {
                 // Legacy callback (API < 23) fires for the main frame only.
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+                    mainWebViewController.onMainFrameLoadSettled(view);
                     showOfflineDialog();
                 }
             }
@@ -588,6 +531,7 @@ public class MainActivity extends Activity {
                 // subresource on the SPA does not trigger the dialog.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                         && request.isForMainFrame()) {
+                    mainWebViewController.onMainFrameLoadSettled(view);
                     showOfflineDialog();
                 }
             }
@@ -637,6 +581,12 @@ public class MainActivity extends Activity {
                 CrashTracker.reset();
                 CookieManager.getInstance().flush();
                 injectAllOverrides(v);
+                if (v == webview) {
+                    mainWebViewController.onMainFrameLoadSettled(v);
+                    if (nativeShellController != null) {
+                        nativeShellController.onPageFinished(v);
+                    }
+                }
                 transferController.kickPendingSharePipelines();
                 loadingStateController.onPageFinished(v);
             }
@@ -914,20 +864,16 @@ public class MainActivity extends Activity {
         if (loadingStateController != null) {
             loadingStateController.updateTheme(newConfig);
         }
-        // Re-apply the window + rootLayout background color so it tracks the
-        // new theme — otherwise a dark→light switch would leave the window
-        // pinned to dark grey (Bug-2 mask) while the page goes white.
-        applyBackgroundColors();
-        // Same story for the status / navigation bars: the theme set their
-        // colors at window creation and the activity is NOT recreated
-        // (uiMode is in configChanges), so without this a live light↔dark
-        // switch left the bars — and their icon tint — in the OLD mode
-        // while the website had already adapted on its own (v6.28 fix).
-        applySystemBarColors();
+        if (nativeShellController != null) {
+            nativeShellController.onConfigurationChanged();
+        }
     }
 
     @Override
     public void onBackPressed() {
+        if (nativeShellController != null && nativeShellController.closePanelIfOpen()) {
+            return;
+        }
         if (popupAuthController != null && popupAuthController.closeTopPopup()) {
             return;
         }
@@ -948,6 +894,9 @@ public class MainActivity extends Activity {
         }
         if (transferController != null) {
             transferController.destroy();
+        }
+        if (nativeShellController != null) {
+            nativeShellController.destroy();
         }
         if (loadingStateController != null) {
             loadingStateController.destroy();
