@@ -392,7 +392,7 @@ public final class ChatGptSiteContract {
              * equivalent of Puppeteer's networkidle heuristic. */
             "  try {" +
             "    if (!window.__webgptLoad) {" +
-            "      var L = {lastMut: Date.now(), lastStart: Date.now(), n: 0};" +
+            "      var L = {lastMut: Date.now(), lastStart: Date.now(), n: 0, mo: null};" +
             "      window.__webgptLoad = L;" +
             "      var origFetch = window.fetch;" +
             "      if (origFetch) {" +
@@ -407,6 +407,7 @@ public final class ChatGptSiteContract {
             "        return origOpen.apply(this, arguments);" +
             "      };" +
             "      var mo = new MutationObserver(function(muts){ L.n += muts.length; L.lastMut = Date.now(); });" +
+            "      L.mo = mo;" +
             "      mo.observe(document, {childList: true, subtree: true, attributes: true, characterData: true});" +
             "    }" +
             "  } catch(e) {}" +
@@ -462,6 +463,10 @@ public final class ChatGptSiteContract {
             "    function fire(){" +
             "      if (sent) return;" +
             "      sent = true;" +
+            "      /* The load tracker only exists to decide when the initial SPA is ready. */" +
+            "      /* Leaving a subtree+attributes+characterData observer alive makes every */" +
+            "      large composer edit pay observer bookkeeping for the lifetime of the chat. */" +
+            "      try { var L=window.__webgptLoad; if(L&&L.mo){L.mo.disconnect();L.mo=null;} } catch(e) {}" +
             "      try {" +
             "        if (window.AndroidBridge && window.AndroidBridge.pageReady)" +
             "          window.AndroidBridge.pageReady();" +
