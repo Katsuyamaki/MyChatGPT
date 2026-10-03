@@ -499,6 +499,66 @@ public final class ChatGptSiteContract {
             "})();";
 
     /**
+     * Diagnostic-only paste timing. Records no clipboard contents.
+     *
+     * The test harness supplies known payload sizes externally. When
+     * beforeinput exposes event.data, only its character count is reported.
+     * Timers/rAF reveal how long the renderer main thread stays busy after
+     * the trusted paste event.
+     */
+    public static final String PASTE_PERFORMANCE_DIAGNOSTICS_JS =
+            "(function(){" +
+            "try{" +
+            "if(window.top!==window)return;" +
+            "var h=(location.hostname||'').toLowerCase();" +
+            "if(!(h==='chatgpt.com'||h.endsWith('.chatgpt.com')))return;" +
+            "if(window.__mychatgptPasteDiag)return;" +
+            "window.__mychatgptPasteDiag=true;" +
+            "var seq=0,active=null;" +
+            "function composer(t){" +
+            "try{" +
+            "if(!t)return false;" +
+            "if(t.id==='prompt-textarea')return true;" +
+            "if(t.closest&&t.closest('#prompt-textarea'))return true;" +
+            "if(t.matches&&t.matches('div[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]'))return true;" +
+            "if(t.closest&&t.closest('div[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]'))return true;" +
+            "if(t.tagName==='TEXTAREA')return true;" +
+            "}catch(e){}return false;}" +
+            "function emit(a,p,c){" +
+            "try{var b=window.AndroidBridge;if(b&&b.pastePerf)b.pastePerf(a.seq,p,c,Math.max(0,Math.round(performance.now()-a.start)));}catch(e){}" +
+            "}" +
+            "document.addEventListener('paste',function(e){" +
+            "if(!composer(e.target))return;" +
+            "var a={seq:++seq,start:performance.now(),chars:-1};active=a;" +
+            "emit(a,'paste',-1);" +
+            "setTimeout(function(){if(active&&active.seq===a.seq)emit(a,'timeout0',a.chars);},0);" +
+            "requestAnimationFrame(function(){if(active&&active.seq===a.seq)emit(a,'raf1',a.chars);});" +
+            "},true);" +
+            "document.addEventListener('beforeinput',function(e){" +
+            "var a=active;if(!a||!composer(e.target))return;" +
+            "try{if(e.inputType&&e.inputType.indexOf('Paste')<0&&e.inputType.indexOf('paste')<0)return;}catch(x){}" +
+            "try{if(typeof e.data==='string')a.chars=e.data.length;}catch(x){}" +
+            "emit(a,'beforeinput',a.chars);" +
+            "},true);" +
+            "document.addEventListener('input',function(e){" +
+            "var a=active;if(!a||!composer(e.target))return;" +
+            "emit(a,'input',a.chars);" +
+            "requestAnimationFrame(function(){" +
+            "if(!active||active.seq!==a.seq)return;" +
+            "emit(a,'input-raf1',a.chars);" +
+            "requestAnimationFrame(function(){" +
+            "if(!active||active.seq!==a.seq)return;" +
+            "emit(a,'input-raf2',a.chars);" +
+            "setTimeout(function(){" +
+            "if(active&&active.seq===a.seq){emit(a,'settled-timeout',a.chars);active=null;}" +
+            "},0);" +
+            "});" +
+            "});" +
+            "},true);" +
+            "}catch(e){}" +
+            "})();";
+
+    /**
      * Focus guard — suppresses chatgpt.com's programmatic .focus() calls on
      * the composer when the user is browsing an EXISTING chat (URL path
      * starts with /c/ or /g/), so the soft keyboard does NOT auto-open on

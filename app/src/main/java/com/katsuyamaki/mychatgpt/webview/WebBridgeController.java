@@ -19,6 +19,7 @@ import com.katsuyamaki.mychatgpt.site.ChatGptSiteContract;
 public final class WebBridgeController {
 
     private static final String TAG = "MyChatGPTBridge";
+    private static final String PASTE_TAG = "MyChatGPTPaste";
 
     public interface Host {
         WebView getMainWebView();
@@ -161,5 +162,23 @@ public final class WebBridgeController {
     public void onFileDropResult(final boolean ok, final String detail) {
         activity.runOnUiThread(
                 () -> transferController.handleFileDropResult(ok, detail));
+    }
+
+    /**
+     * Diagnostic-only metadata for large-paste timing. No clipboard text is
+     * transferred across the bridge; only sequence, phase, optional event
+     * data length, and elapsed milliseconds are logged.
+     */
+    @JavascriptInterface
+    public void pastePerf(final int sequence,
+                          final String phase,
+                          final int chars,
+                          final long elapsedMs) {
+        if (!BuildConfig.EXPERIMENTAL || !hostAllowed()) return;
+        Log.i(PASTE_TAG,
+                "seq=" + sequence
+                        + " phase=" + phase
+                        + " chars=" + chars
+                        + " elapsedMs=" + elapsedMs);
     }
 }

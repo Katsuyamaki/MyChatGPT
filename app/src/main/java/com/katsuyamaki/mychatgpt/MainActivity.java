@@ -445,6 +445,12 @@ public class MainActivity extends Activity {
                 // the very first script execution.
                 WebViewCompat.addDocumentStartJavaScript(
                         webView, ChatGptSiteContract.FOCUS_GUARD_JS, java.util.Collections.singleton("*"));
+                if (BuildConfig.EXPERIMENTAL) {
+                    WebViewCompat.addDocumentStartJavaScript(
+                            webView,
+                            ChatGptSiteContract.PASTE_PERFORMANCE_DIAGNOSTICS_JS,
+                            java.util.Collections.singleton("*"));
+                }
             }
         } catch (Throwable t) {
             Log.e(TAG, "addDocumentStartJavaScript failed", t);
