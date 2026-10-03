@@ -2,6 +2,8 @@ package com.katsuyamaki.mychatgpt.site;
 
 import android.net.Uri;
 
+import org.json.JSONObject;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -604,6 +606,106 @@ public final class ChatGptSiteContract {
             "root.style.setProperty('background-color','transparent','important');" +
             "if(d.body)d.body.style.setProperty('background-color','transparent','important');" +
             "}catch(e){}})();";
+
+
+    /**
+     * Diagnostic-only paste timing probe. It never reads or logs clipboard
+     * contents: only character count and elapsed timings. A zero-delay timer
+     * and RAF make main-thread stalls after the native WebView paste visible
+     * in logcat.
+     */
+    public static final String PASTE_DIAGNOSTIC_JS =
+            "(function(){try{" +
+            "if(window.__mychatgptPasteDiag)return;window.__mychatgptPasteDiag=true;" +
+            "if(window.top!==window)return;" +
+            "function composer(el){try{return !!(el&&(el.id==='prompt-textarea'" +
+            "||(el.matches&&el.matches('div[contenteditable=\\"true\\"][role=\\"textbox\\"]'))" +
+            "||(el.closest&&el.closest('#prompt-textarea'))" +
+            "||(el.tagName==='TEXTAREA')));}catch(e){return false;}}" +
+            "function dbg(m){try{if(window.AndroidBridge&&AndroidBridge.debugLog)" +
+            "AndroidBridge.debugLog('paste-perf '+m);}catch(e){}}" +
+            "document.addEventListener('paste',function(e){try{" +
+            "if(!composer(e.target))return;" +
+            "var t=performance.now(),n=0;" +
+            "try{n=String((e.clipboardData&&e.clipboardData.getData('text/plain'))||'').length;}catch(_){}" +
+            "window.__mychatgptPasteT0=t;window.__mychatgptPasteLen=n;" +
+            "dbg('normal event len='+n);" +
+            "requestAnimationFrame(function(){dbg('normal raf elapsedMs='+Math.round(performance.now()-t));});" +
+            "setTimeout(function(){dbg('normal timer0 elapsedMs='+Math.round(performance.now()-t));},0);" +
+            "setTimeout(function(){dbg('normal timer100 elapsedMs='+Math.round(performance.now()-t));},100);" +
+            "setTimeout(function(){dbg('normal timer1000 elapsedMs='+Math.round(performance.now()-t));},1000);" +
+            "}catch(_){}},true);" +
+            "document.addEventListener('input',function(e){try{" +
+            "var t=window.__mychatgptPasteT0||0;if(!t||!composer(e.target))return;" +
+            "dbg('normal input len='+(window.__mychatgptPasteLen||0)+' elapsedMs='+Math.round(performance.now()-t));" +
+            "window.__mychatgptPasteT0=0;" +
+            "}catch(_){}},true);" +
+            "}catch(e){}})();";
+
+    public static final String FAST_PASTE_RESET_JS =
+            "(function(){window.__mychatgptFastPasteBuffer='';return 'reset';})();";
+
+    public static String buildFastPasteAppendJs(String chunk) {
+        return "(function(){"
+                + "window.__mychatgptFastPasteBuffer="
+                + "(window.__mychatgptFastPasteBuffer||'')+"
+                + JSONObject.quote(chunk)
+                + ";return String(window.__mychatgptFastPasteBuffer.length);"
+                + "})();";
+    }
+
+    /**
+     * Commit the accumulated clipboard text as one editor insertion. The
+     * share-active window intentionally permits the existing focus guard to
+     * focus the composer for this explicit user action.
+     */
+    public static final String FAST_PASTE_COMMIT_JS =
+            "(function(){try{" +
+            "var text=String(window.__mychatgptFastPasteBuffer||'');" +
+            "window.__mychatgptFastPasteBuffer='';" +
+            "var el=document.querySelector('#prompt-textarea')" +
+            "||document.querySelector('div[contenteditable=\\"true\\"][role=\\"textbox\\"]')" +
+            "||document.querySelector('div[contenteditable=\\"true\\"]')" +
+            "||document.querySelector('textarea[placeholder]');" +
+            "if(!el)return 'error|no-composer|'+text.length+'|0';" +
+            "window.__webgptShareActiveUntil=Date.now()+6000;" +
+            "var t=performance.now(),mode='';" +
+            "try{el.focus({preventScroll:true});}catch(_){try{el.focus();}catch(__){}}" +
+            "if(el.tagName==='TEXTAREA'||el.tagName==='INPUT'){" +
+            "mode='value-setter';" +
+            "var start=(typeof el.selectionStart==='number')?el.selectionStart:(el.value||'').length;" +
+            "var end=(typeof el.selectionEnd==='number')?el.selectionEnd:start;" +
+            "var old=String(el.value||'');var next=old.slice(0,start)+text+old.slice(end);" +
+            "var proto=Object.getPrototypeOf(el);" +
+            "var desc=proto&&Object.getOwnPropertyDescriptor(proto,'value');" +
+            "if(desc&&desc.set)desc.set.call(el,next);else el.value=next;" +
+            "try{el.setSelectionRange(start+text.length,start+text.length);}catch(_){}" +
+            "el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));" +
+            "}else{" +
+            "mode='execCommand';" +
+            "var sel=window.getSelection();" +
+            "if(!sel||!sel.rangeCount||!el.contains(sel.anchorNode)){" +
+            "var r=document.createRange();r.selectNodeContents(el);r.collapse(false);" +
+            "sel=window.getSelection();sel.removeAllRanges();sel.addRange(r);" +
+            "}" +
+            "var ok=false;try{ok=document.execCommand('insertText',false,text);}catch(_){}" +
+            "if(!ok){" +
+            "mode='range-fallback';" +
+            "var s=window.getSelection();var rr=(s&&s.rangeCount)?s.getRangeAt(0):null;" +
+            "if(rr){rr.deleteContents();var node=document.createTextNode(text);rr.insertNode(node);" +
+            "rr.setStartAfter(node);rr.collapse(true);s.removeAllRanges();s.addRange(rr);}" +
+            "el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));" +
+            "}" +
+            "}" +
+            "var ms=Math.round(performance.now()-t);" +
+            "try{if(window.AndroidBridge&&AndroidBridge.debugLog)" +
+            "AndroidBridge.debugLog('paste-perf fast commit len='+text.length+' jsMs='+ms+' mode='+mode);}catch(_){}" +
+            "requestAnimationFrame(function(){try{if(window.AndroidBridge&&AndroidBridge.debugLog)" +
+            "AndroidBridge.debugLog('paste-perf fast raf elapsedMs='+Math.round(performance.now()-t));}catch(_){}});" +
+            "setTimeout(function(){try{if(window.AndroidBridge&&AndroidBridge.debugLog)" +
+            "AndroidBridge.debugLog('paste-perf fast timer0 elapsedMs='+Math.round(performance.now()-t));}catch(_){}} ,0);" +
+            "return 'ok|'+text.length+'|'+ms+'|'+mode;" +
+            "}catch(e){return 'error|'+String(e)+'|0|0';}})();";
 
     // Java-side polling / attachment timings inherited from WebGPT's
     // ChatGPT-specific integration. Keep these together with the selectors

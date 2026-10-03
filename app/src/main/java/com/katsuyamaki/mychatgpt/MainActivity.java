@@ -54,6 +54,7 @@ import androidx.core.splashscreen.SplashScreen;
 import androidx.core.splashscreen.SplashScreenViewProvider;
 import androidx.webkit.WebViewCompat;
 
+import com.katsuyamaki.mychatgpt.webview.ClipboardPasteController;
 import com.katsuyamaki.mychatgpt.webview.CrashTracker;
 import com.katsuyamaki.mychatgpt.webview.MainWebViewController;
 import com.katsuyamaki.mychatgpt.webview.LoadingStateController;
@@ -86,6 +87,7 @@ public class MainActivity extends Activity {
     ViewGroup rootLayout;
     private LoadingStateController loadingStateController;
     private MainWebViewController mainWebViewController;
+    private ClipboardPasteController clipboardPasteController;
     private PopupAuthController popupAuthController;
     private TransferController transferController;
     private NativeShellController nativeShellController;
@@ -294,6 +296,9 @@ public class MainActivity extends Activity {
                 });
         loadingStateController =
                 new LoadingStateController(this, rootLayout);
+        clipboardPasteController = new ClipboardPasteController(
+                this,
+                () -> webview);
         nativeShellController = new NativeShellController(
                 this,
                 (FrameLayout) rootLayout,
@@ -312,6 +317,13 @@ public class MainActivity extends Activity {
                         }
                         loadingStateController.resetInitialLoad();
                         mainWebViewController.forceReloadCurrent(webview, current);
+                    }
+
+                    @Override
+                    public void fastPasteClipboard() {
+                        if (clipboardPasteController != null) {
+                            clipboardPasteController.pastePrimaryClipboard();
+                        }
                     }
                 });
         loadingStateController.initializePresentation();
@@ -433,6 +445,10 @@ public class MainActivity extends Activity {
                 WebViewCompat.addDocumentStartJavaScript(
                         webView,
                         ChatGptSiteContract.WALLPAPER_TRANSPARENCY_JS,
+                        java.util.Collections.singleton("*"));
+                WebViewCompat.addDocumentStartJavaScript(
+                        webView,
+                        ChatGptSiteContract.PASTE_DIAGNOSTIC_JS,
                         java.util.Collections.singleton("*"));
                 // Registered AFTER ChatGptSiteContract.PAGE_OVERRIDES_JS on purpose: the ready
                 // watcher's settle fallback reads window.__webgptLoad, which
