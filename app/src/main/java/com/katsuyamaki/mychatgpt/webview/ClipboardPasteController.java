@@ -32,10 +32,15 @@ public final class ClipboardPasteController {
 
     private final Activity activity;
     private final Host host;
+    private final TransferController transferController;
 
-    public ClipboardPasteController(Activity activity, Host host) {
+    public ClipboardPasteController(
+            Activity activity,
+            Host host,
+            TransferController transferController) {
         this.activity = activity;
         this.host = host;
+        this.transferController = transferController;
     }
 
     public void pastePrimaryClipboard() {
@@ -50,20 +55,55 @@ public final class ClipboardPasteController {
             return;
         }
 
+        ClipboardPayload payload = readPrimaryClipboard("Fast Paste");
+        if (payload == null) return;
+
+        final String text = payload.text;
+        final long start = SystemClock.elapsedRealtime();
+        Log.i(TAG, "start chars=" + text.length()
+                + " readMs=" + payload.readMs
+                + " chunks=" + ((text.length() + CHUNK_CHARS - 1) / CHUNK_CHARS));
+
+        webView.evaluateJavascript(
+                ChatGptSiteContract.FAST_PASTE_RESET_JS,
+                ignored -> appendNext(webView, text, 0, start));
+    }
+
+    public void attachPrimaryClipboardAsText() {
+        final WebView webView = host.getMainWebView();
+        if (webView == null || activity.isFinishing()) {
+            toast("Clipboard TXT: WebView unavailable");
+            return;
+        }
+
+        if (!ChatGptSiteContract.isChatGptWebUrl(webView.getUrl())) {
+            toast("Clipboard TXT: open a ChatGPT chat first");
+            return;
+        }
+
+        ClipboardPayload payload = readPrimaryClipboard("Clipboard TXT");
+        if (payload == null) return;
+
+        Log.i(TAG, "attach-txt start chars=" + payload.text.length()
+                + " readMs=" + payload.readMs);
+        transferController.attachClipboardText(payload.text);
+    }
+
+    private ClipboardPayload readPrimaryClipboard(String label) {
         final long readStart = SystemClock.elapsedRealtime();
         final String text;
         try {
             ClipboardManager clipboard = (ClipboardManager)
                     activity.getSystemService(Context.CLIPBOARD_SERVICE);
             if (clipboard == null || !clipboard.hasPrimaryClip()) {
-                toast("Fast Paste: clipboard is empty");
-                return;
+                toast(label + ": clipboard is empty");
+                return null;
             }
 
             ClipData clip = clipboard.getPrimaryClip();
             if (clip == null || clip.getItemCount() == 0) {
-                toast("Fast Paste: clipboard is empty");
-                return;
+                toast(label + ": clipboard is empty");
+                return null;
             }
 
             CharSequence value = clip.getItemAt(0).getText();
@@ -73,31 +113,34 @@ public final class ClipboardPasteController {
             text = value == null ? "" : value.toString();
         } catch (Throwable t) {
             Log.e(TAG, "clipboard read failed", t);
-            toast("Fast Paste: clipboard read failed");
-            return;
+            toast(label + ": clipboard read failed");
+            return null;
         }
 
-        final long readMs = SystemClock.elapsedRealtime() - readStart;
+        long readMs = SystemClock.elapsedRealtime() - readStart;
         if (text.isEmpty()) {
-            toast("Fast Paste: clipboard has no text");
-            return;
+            toast(label + ": clipboard has no text");
+            return null;
         }
         if (text.length() > MAX_CHARS) {
-            toast("Fast Paste: clipboard exceeds "
+            toast(label + ": clipboard exceeds "
                     + MAX_CHARS + " characters");
             Log.w(TAG, "refused chars=" + text.length()
                     + " readMs=" + readMs);
-            return;
+            return null;
         }
 
-        final long start = SystemClock.elapsedRealtime();
-        Log.i(TAG, "start chars=" + text.length()
-                + " readMs=" + readMs
-                + " chunks=" + ((text.length() + CHUNK_CHARS - 1) / CHUNK_CHARS));
+        return new ClipboardPayload(text, readMs);
+    }
 
-        webView.evaluateJavascript(
-                ChatGptSiteContract.FAST_PASTE_RESET_JS,
-                ignored -> appendNext(webView, text, 0, start));
+    private static final class ClipboardPayload {
+        final String text;
+        final long readMs;
+
+        ClipboardPayload(String text, long readMs) {
+            this.text = text;
+            this.readMs = readMs;
+        }
     }
 
     private void appendNext(

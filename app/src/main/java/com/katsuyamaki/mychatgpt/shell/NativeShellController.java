@@ -59,6 +59,7 @@ public final class NativeShellController {
         WebView getMainWebView();
         void forceReloadCurrentChat();
         void fastPasteClipboard();
+        void attachClipboardText();
     }
 
     private final Activity activity;
@@ -257,6 +258,13 @@ public final class NativeShellController {
         fastPasteParams.topMargin = dp(6);
         panel.addView(fastPaste, fastPasteParams);
 
+        TextView attachClipboard = makeButton("ATTACH CLIPBOARD .TXT (DIAG)");
+        LinearLayout.LayoutParams attachClipboardParams =
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
+        attachClipboardParams.topMargin = dp(6);
+        panel.addView(attachClipboard, attachClipboardParams);
+
         TextView resetTransparency = makeButton("RESET TRANSPARENCY");
         LinearLayout.LayoutParams resetParams =
                 new LinearLayout.LayoutParams(
@@ -311,6 +319,11 @@ public final class NativeShellController {
         fastPaste.setOnClickListener(v -> {
             panel.setVisibility(View.GONE);
             host.fastPasteClipboard();
+        });
+
+        attachClipboard.setOnClickListener(v -> {
+            panel.setVisibility(View.GONE);
+            host.attachClipboardText();
         });
 
         resetTransparency.setOnClickListener(v -> {

@@ -298,7 +298,8 @@ public class MainActivity extends Activity {
                 new LoadingStateController(this, rootLayout);
         clipboardPasteController = new ClipboardPasteController(
                 this,
-                () -> webview);
+                () -> webview,
+                transferController);
         nativeShellController = new NativeShellController(
                 this,
                 (FrameLayout) rootLayout,
@@ -323,6 +324,13 @@ public class MainActivity extends Activity {
                     public void fastPasteClipboard() {
                         if (clipboardPasteController != null) {
                             clipboardPasteController.pastePrimaryClipboard();
+                        }
+                    }
+
+                    @Override
+                    public void attachClipboardText() {
+                        if (clipboardPasteController != null) {
+                            clipboardPasteController.attachPrimaryClipboardAsText();
                         }
                     }
                 });

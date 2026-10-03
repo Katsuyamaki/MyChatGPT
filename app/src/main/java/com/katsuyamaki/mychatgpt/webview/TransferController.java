@@ -63,6 +63,9 @@ public final class TransferController {
     private volatile String pendingFileMime;
     private volatile long lastFileInjectionAt;
 
+    private volatile long clipboardTextAttachStartedAt;
+    private volatile int clipboardTextAttachChars;
+
     private volatile boolean blobDownloadInFlight;
     private volatile String pendingBlobFilename;
     private volatile String pendingBlobMime;
@@ -147,6 +150,8 @@ public final class TransferController {
         pendingFileB64 = null;
         pendingFileName = null;
         pendingFileMime = null;
+        clipboardTextAttachStartedAt = 0L;
+        clipboardTextAttachChars = 0;
         if (filePathCallback != null) {
             filePathCallback = null;
         }
@@ -234,6 +239,62 @@ public final class TransferController {
         } catch (Exception e) {
             Log.e(TAG, "copyToClipboard failed", e);
         }
+    }
+
+    /**
+     * Diagnostic large-text path: keep clipboard contents out of the rich
+     * editor and hand them to ChatGPT as a plain-text attachment through the
+     * already-proven file-drop pipeline.
+     */
+    public void attachClipboardText(String text) {
+        if (text == null || text.isEmpty() || activity.isFinishing()) return;
+
+        byte[] utf8;
+        try {
+            utf8 = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            Log.e(TAG, "clipboard text encode failed", t);
+            Toast.makeText(activity,
+                    "Clipboard TXT: encode failed",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        final int chars = text.length();
+        final String fileName =
+                "clipboard-" + System.currentTimeMillis() + ".txt";
+
+        pendingFileB64 = android.util.Base64.encodeToString(
+                utf8, android.util.Base64.NO_WRAP);
+        pendingFileName = fileName;
+        pendingFileMime = "text/plain";
+        pendingAutoAttach = false;
+        pendingShareFileUri = null;
+
+        clipboardTextAttachStartedAt = SystemClock.elapsedRealtime();
+        clipboardTextAttachChars = chars;
+
+        Log.i(TAG, "clipboard-txt prepared chars=" + chars
+                + " bytes=" + utf8.length
+                + " b64Chars=" + pendingFileB64.length());
+
+        WebView main = host.getMainWebView();
+        if (main == null) {
+            clipboardTextAttachStartedAt = 0L;
+            clipboardTextAttachChars = 0;
+            Toast.makeText(activity,
+                    "Clipboard TXT: WebView unavailable",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        Toast.makeText(activity,
+                "Attaching clipboard as text file…",
+                Toast.LENGTH_SHORT).show();
+
+        waitForComposerReady(
+                ChatGptSiteContract.COMPOSER_READY_MAX_WAIT_MS,
+                this::runFileDropSequence);
     }
 
     private void handleSharedFile(Uri fileUri, String mime) {
@@ -453,6 +514,25 @@ public final class TransferController {
 
     public void handleFileDropResult(boolean ok, String detail) {
         Log.i(TAG, "drop result: " + (ok ? "ok" : "failed") + " " + detail);
+
+        long clipboardStart = clipboardTextAttachStartedAt;
+        int clipboardChars = clipboardTextAttachChars;
+        if (clipboardStart > 0L) {
+            long elapsed = SystemClock.elapsedRealtime() - clipboardStart;
+            clipboardTextAttachStartedAt = 0L;
+            clipboardTextAttachChars = 0;
+            Log.i(TAG, "clipboard-txt result ok=" + ok
+                    + " chars=" + clipboardChars
+                    + " elapsedMs=" + elapsed
+                    + " detail=" + detail);
+            Toast.makeText(activity,
+                    ok
+                            ? "Clipboard TXT: " + clipboardChars
+                                    + " chars attached in " + elapsed + " ms"
+                            : "Clipboard TXT failed after " + elapsed + " ms",
+                    Toast.LENGTH_LONG).show();
+        }
+
         if (ok) {
             pendingShareFileUri = null;
             final String checkName = pendingFileName;
