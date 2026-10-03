@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 import android.util.Log;
 import android.widget.Toast;
 
+import com.katsuyamaki.mychatgpt.diagnostic.PerformanceProbe;
 import com.katsuyamaki.mychatgpt.webview.CrashTracker;
 import com.katsuyamaki.mychatgpt.webview.Hooker;
 import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
@@ -39,6 +40,7 @@ public class App extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        PerformanceProbe.mark("app_onCreate_enter");
 
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
 
@@ -69,5 +71,6 @@ public class App extends Application {
 
         // 4. Crash tracker — bump on every cold start. Reset on successful WebView load.
         CrashTracker.init(getApplicationContext());
+        PerformanceProbe.mark("app_onCreate_exit");
     }
 }
