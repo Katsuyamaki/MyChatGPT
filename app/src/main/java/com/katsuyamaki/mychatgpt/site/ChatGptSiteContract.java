@@ -692,7 +692,7 @@ public final class ChatGptSiteContract {
             "var t=window.__mychatgptPasteT0||0;if(!t||!composer(e.target))return;" +
             "dbg('normal input elapsedMs='+Math.round(performance.now()-t));window.__mychatgptPasteT0=0;" +
             "}catch(_){}},true);" +
-            "}catch(e){}})();
+            "}catch(e){}})();";
 
     public static final String FAST_PASTE_RESET_JS =
             "(function(){window.__mychatgptFastPasteBuffer='';return 'reset';})();";
