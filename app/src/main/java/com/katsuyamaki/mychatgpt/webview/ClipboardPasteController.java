@@ -179,9 +179,14 @@ public final class ClipboardPasteController {
                         String[] parts = decoded.split("\\|", -1);
                         String jsMs = parts.length > 2 ? parts[2] : "?";
                         String mode = parts.length > 3 ? parts[3] : "?";
+                        String detail = "";
+                        if ("range-direct".equals(mode) && parts.length > 5) {
+                            detail = ", DOM " + parts[4] + " ms, input "
+                                    + parts[5] + " ms";
+                        }
                         toast("Fast Paste: " + chars + " chars, "
                                 + totalMs + " ms total (JS "
-                                + jsMs + " ms, " + mode + ")");
+                                + jsMs + " ms, " + mode + detail + ")");
                     } else {
                         toast("Fast Paste failed: " + decoded);
                     }
