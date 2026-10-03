@@ -612,6 +612,55 @@ public final class ChatGptSiteContract {
 
 
     /**
+     * Diagnostic paste-performance probe.
+     *
+     * Records metadata only: event kind, monotonic/page timestamps, text length,
+     * input type, target shape, and whether another handler prevented default.
+     * It never logs pasted text. Registered only on EXPERIMENTAL builds.
+     */
+    public static final String PASTE_PERF_PROBE_JS =
+            "(function(){try{" +
+            "if(window.__mychatgptPastePerfProbe)return;window.__mychatgptPastePerfProbe=true;" +
+            "if(window.top!==window)return;" +
+            "function composer(el){try{" +
+            "if(!el)return null;" +
+            "if(el.id==='prompt-textarea')return el;" +
+            "if(el.closest){var c=el.closest('#prompt-textarea');if(c)return c;}" +
+            "if(el.matches&&el.matches('div[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]'))return el;" +
+            "if(el.closest){var r=el.closest('div[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]');if(r)return r;}" +
+            "if(el.tagName==='TEXTAREA'||el.tagName==='INPUT')return el;" +
+            "return null;}catch(e){return null;}}" +
+            "function targetName(el){try{" +
+            "if(!el)return 'none';" +
+            "if(el.id)return String(el.tagName||'').toLowerCase()+'#'+el.id;" +
+            "if(el.getAttribute&&el.getAttribute('role'))return String(el.tagName||'').toLowerCase()+'[role='+el.getAttribute('role')+']';" +
+            "return String(el.tagName||'unknown').toLowerCase();" +
+            "}catch(e){return 'unknown';}}" +
+            "function emit(kind,e,len) {try{" +
+            "var t=composer(e&&e.target);" +
+            "var it=(e&&e.inputType)?String(e.inputType):'';" +
+            "var perf=(window.performance&&performance.now)?performance.now().toFixed(3):'-1';" +
+            "console.log('MYCHATGPT_PASTE_PROBE event='+kind+" +
+            "' wallMs='+Date.now()+' perfMs='+perf+' len='+len+" +
+            "' inputType='+it+' defaultPrevented='+!!(e&&e.defaultPrevented)+" +
+            "' target='+targetName(t));" +
+            "}catch(_){} }" +
+            "document.addEventListener('paste',function(e){try{" +
+            "var text='';try{if(e.clipboardData)text=e.clipboardData.getData('text/plain')||'';}catch(_){}" +
+            "var len=text.length;emit('paste_capture',e,len);" +
+            "setTimeout(function(){emit('paste_post_task',e,len);},0);" +
+            "}catch(_){}},true);" +
+            "document.addEventListener('beforeinput',function(e){try{" +
+            "var type=String(e.inputType||'');" +
+            "if(type!=='insertFromPaste'&&type!=='insertText')return;" +
+            "var text='';try{if(e.dataTransfer)text=e.dataTransfer.getData('text/plain')||'';}catch(_){}" +
+            "if(!text&&typeof e.data==='string')text=e.data;" +
+            "emit('beforeinput_capture',e,text.length);" +
+            "}catch(_){}},true);" +
+            "}catch(e){}})();";
+
+
+    /**
      * Large-paste accelerator for the ChatGPT composer.
      *
      * Chromium's legacy execCommand('insertText') path becomes extremely slow
