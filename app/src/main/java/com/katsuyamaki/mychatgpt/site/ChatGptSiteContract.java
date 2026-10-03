@@ -623,28 +623,76 @@ public final class ChatGptSiteContract {
             "(function(){try{" +
             "if(window.__mychatgptPasteDiag)return;window.__mychatgptPasteDiag=true;" +
             "if(window.top!==window)return;" +
-            "function composer(el){try{return !!(el&&(el.id==='prompt-textarea'" +
-            "||(el.matches&&el.matches('div[contenteditable=\"true\"][role=\"textbox\"]'))" +
-            "||(el.closest&&el.closest('#prompt-textarea'))" +
-            "||(el.tagName==='TEXTAREA')));}catch(e){return false;}}" +
+            "var LARGE_PASTE_MIN=2048;" +
+            "var handling=false;" +
+            "function composer(el){try{" +
+            "if(!el)return null;" +
+            "if(el.id==='prompt-textarea')return el;" +
+            "if(el.closest){var c=el.closest('#prompt-textarea');if(c)return c;}" +
+            "if(el.matches&&el.matches('div[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]'))return el;" +
+            "if(el.closest){var r=el.closest('div[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]');if(r)return r;}" +
+            "if(el.tagName==='TEXTAREA'||el.tagName==='INPUT')return el;" +
+            "return null;}catch(e){return null;}}" +
             "function dbg(m){try{if(window.AndroidBridge&&AndroidBridge.debugLog)" +
             "AndroidBridge.debugLog('paste-perf '+m);}catch(e){}}" +
+            "function directInsert(el,text,source,ev){try{" +
+            "if(!el||!text||text.length<LARGE_PASTE_MIN||handling)return false;" +
+            "handling=true;" +
+            "var t=performance.now(),domMs=0,inputMs=0;" +
+            "try{ev.preventDefault();}catch(_){}try{ev.stopImmediatePropagation();}catch(_){}try{ev.stopPropagation();}catch(_){}" +
+            "try{el.focus({preventScroll:true});}catch(_){try{el.focus();}catch(__){}}" +
+            "if(el.tagName==='TEXTAREA'||el.tagName==='INPUT'){" +
+            "var ds=performance.now();" +
+            "var a=(typeof el.selectionStart==='number')?el.selectionStart:(el.value||'').length;" +
+            "var b=(typeof el.selectionEnd==='number')?el.selectionEnd:a;" +
+            "var old=String(el.value||'');var next=old.slice(0,a)+text+old.slice(b);" +
+            "var proto=Object.getPrototypeOf(el);var desc=proto&&Object.getOwnPropertyDescriptor(proto,'value');" +
+            "if(desc&&desc.set)desc.set.call(el,next);else el.value=next;" +
+            "try{el.setSelectionRange(a+text.length,a+text.length);}catch(_){}" +
+            "domMs=Math.round(performance.now()-ds);" +
+            "}else{" +
+            "var s=window.getSelection();" +
+            "if(!s||!s.rangeCount||!el.contains(s.anchorNode)){" +
+            "var er=document.createRange();er.selectNodeContents(el);er.collapse(false);" +
+            "s=window.getSelection();s.removeAllRanges();s.addRange(er);" +
+            "}" +
+            "var rr=(s&&s.rangeCount)?s.getRangeAt(0):null;if(!rr)throw new Error('no-range');" +
+            "var ds2=performance.now();rr.deleteContents();var node=document.createTextNode(text);" +
+            "rr.insertNode(node);rr.setStartAfter(node);rr.collapse(true);s.removeAllRanges();s.addRange(rr);" +
+            "domMs=Math.round(performance.now()-ds2);" +
+            "}" +
+            "var is=performance.now();" +
+            "el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));" +
+            "inputMs=Math.round(performance.now()-is);" +
+            "var total=Math.round(performance.now()-t);" +
+            "dbg('accelerated '+source+' len='+text.length+' totalMs='+total+' domMs='+domMs+' inputMs='+inputMs);" +
+            "requestAnimationFrame(function(){dbg('accelerated '+source+' raf elapsedMs='+Math.round(performance.now()-t));});" +
+            "setTimeout(function(){dbg('accelerated '+source+' timer0 elapsedMs='+Math.round(performance.now()-t));},0);" +
+            "return true;" +
+            "}catch(e){dbg('accelerated '+source+' failed '+String(e));return false;}finally{handling=false;}}" +
             "document.addEventListener('paste',function(e){try{" +
-            "if(!composer(e.target))return;" +
-            "var t=performance.now();" +
-            "window.__mychatgptPasteT0=t;" +
-            "dbg('normal event');" +
+            "var el=composer(e.target);if(!el)return;" +
+            "var text='';try{if(e.clipboardData)text=e.clipboardData.getData('text/plain')||'';}catch(_){}" +
+            "if(text.length>=LARGE_PASTE_MIN){if(directInsert(el,text,'paste',e))return;}" +
+            "var t=performance.now();window.__mychatgptPasteT0=t;dbg('normal event len='+text.length);" +
             "requestAnimationFrame(function(){dbg('normal raf elapsedMs='+Math.round(performance.now()-t));});" +
             "setTimeout(function(){dbg('normal timer0 elapsedMs='+Math.round(performance.now()-t));},0);" +
             "setTimeout(function(){dbg('normal timer100 elapsedMs='+Math.round(performance.now()-t));},100);" +
             "setTimeout(function(){dbg('normal timer1000 elapsedMs='+Math.round(performance.now()-t));},1000);" +
             "}catch(_){}},true);" +
+            "document.addEventListener('beforeinput',function(e){try{" +
+            "var el=composer(e.target);if(!el||handling)return;" +
+            "var type=String(e.inputType||'');var text='';" +
+            "try{if(e.dataTransfer)text=e.dataTransfer.getData('text/plain')||'';}catch(_){}" +
+            "if(!text&&typeof e.data==='string')text=e.data;" +
+            "if(text.length<LARGE_PASTE_MIN)return;" +
+            "if(type==='insertFromPaste'||type==='insertText')directInsert(el,text,'beforeinput:'+type,e);" +
+            "}catch(_){}},true);" +
             "document.addEventListener('input',function(e){try{" +
             "var t=window.__mychatgptPasteT0||0;if(!t||!composer(e.target))return;" +
-            "dbg('normal input elapsedMs='+Math.round(performance.now()-t));" +
-            "window.__mychatgptPasteT0=0;" +
+            "dbg('normal input elapsedMs='+Math.round(performance.now()-t));window.__mychatgptPasteT0=0;" +
             "}catch(_){}},true);" +
-            "}catch(e){}})();";
+            "}catch(e){}})();
 
     public static final String FAST_PASTE_RESET_JS =
             "(function(){window.__mychatgptFastPasteBuffer='';return 'reset';})();";
