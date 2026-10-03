@@ -174,16 +174,26 @@ the primary injection target for shared files.
   text box. This exact confusion once made the settle code click `+` and open
   menus instead of focusing the composer (pitfall 4.6-P3).
 
-### 2.4 The three injected scripts (document-start, every frame)
+### 2.4 The five injected scripts (document-start)
 
-Registered in `installDocumentStartOverrides()` via
-`WebViewCompat.addDocumentStartJavaScript()` in this order (order matters —
-the ready watcher reads `window.__webgptLoad` installed by the overrides):
-`PAGE_OVERRIDES_JS`, then `PAGE_READY_WATCHER_JS`, then `FOCUS_GUARD_JS`.
-They are also re-injected at `onPageFinished` (`injectAllOverrides()`) as a
-fallback for WebViews without `DOCUMENT_START_SCRIPT` support — the scripts
-are idempotent (`window.__…` guards). Popups get **only**
-`PAGE_OVERRIDES_JS` (document-start) — never the watcher or the focus guard.
+The main WebView registers five scripts in `installDocumentStartOverrides()`
+via `WebViewCompat.addDocumentStartJavaScript()`, in this order:
+`PAGE_OVERRIDES_JS`, `WALLPAPER_TRANSPARENCY_JS`,
+`LARGE_PASTE_ACCELERATOR_JS`, `PAGE_READY_WATCHER_JS`, then
+`FOCUS_GUARD_JS`. Order matters because the ready watcher reads
+`window.__webgptLoad` installed by the overrides. The paste accelerator and
+focus guard are main-frame-gated internally; the API itself injects into every
+frame.
+
+`onPageFinished` re-injects `PAGE_OVERRIDES_JS` and, for the main WebView,
+`PAGE_READY_WATCHER_JS` as the late fallback/re-arm path. Wallpaper
+transparency is separately re-applied by `NativeShellController`. The app
+pre-launch gate requires a WebView with document-start support, so the
+large-paste accelerator and focus guard do not need a late fallback.
+
+Popup WebViews get **only** `PAGE_OVERRIDES_JS` at document start (plus the
+same override fallback on `onPageFinished`) — never wallpaper transparency,
+the large-paste accelerator, the ready watcher, or the focus guard.
 
 #### PAGE_OVERRIDES_JS — Web-API polyfills shaped by ChatGPT's behavior
 
@@ -221,13 +231,41 @@ chatgpt.com behavior. **Port it as-is first, then verify** on the target site.
    `MutationObserver` (last DOM-mutation timestamp). Powers the settle
    heuristics (2.4 / 2.5): "no DOM mutation for 2 s AND no request started
    for 1.5 s" = page quiet. This is an in-page networkidle heuristic,
-   device-speed independent.
+   device-speed independent. The observer is stored on the tracker and
+   disconnected as soon as `PAGE_READY_WATCHER_JS` fires; it must not remain
+   attached to the whole document for the lifetime of a chat, because large
+   editor mutations otherwise pay unnecessary observer bookkeeping.
 6. `dbg()` telemetry → `AndroidBridge.debugLog` (logcat, EXPERIMENTAL builds
    only) and a one-per-load beacon "overrides active (main frame)".
 
 `window.open` is deliberately **not** hooked — an earlier debug hook broke
 the user-gesture context, `onCreateWindow` never fired, and external links
 stopped opening (pitfall 4.6-P4).
+
+#### LARGE_PASTE_ACCELERATOR_JS — bypass pathological large contenteditable paste
+
+Large plain-text pastes into ChatGPT's contenteditable composer can become
+orders of magnitude slower when Chromium/site editing falls through
+`document.execCommand('insertText')`. The production workaround is
+main-frame only and deliberately narrow:
+
+- pastes below 2,048 characters stay on ChatGPT's normal path;
+- larger `paste` events are intercepted in capture phase, preserving the
+  active selection/replacement range;
+- contenteditable text is inserted directly with a DOM `Range` (text
+  inputs/areas use their native value setter), then exactly one bubbling
+  `InputEvent('input', {inputType:'insertText'})` is dispatched so ChatGPT
+  synchronizes editor state;
+- a `beforeinput` fallback handles IMEs that expose a large
+  `insertFromPaste` / `insertText` payload without a conventional paste
+  event;
+- the script never reads the Android clipboard directly; it uses only the
+  text payload already attached to the trusted browser input event.
+
+Owner-device regression for this path includes empty-composer paste,
+mid-text insertion, selected-text replacement, multiline/code content,
+delete-after-paste, typing immediately afterward, and send. Keep those cases
+when changing composer selectors or editor integration.
 
 #### PAGE_READY_WATCHER_JS — "the SPA is REALLY rendered" signal
 
@@ -680,6 +718,14 @@ series; most also have a comment at the relevant code site.
   tinting at the usage site. Same class of trap: don't rely on any
   `app:`-namespace attribute on plain framework views in this app's
   non-AppCompat activities.
+- **P18 — Avoid `execCommand('insertText')` for large composer pastes.**
+  On the tested Android WebView, multi-kilobyte inserts through that legacy
+  editing path stalled the JS/main thread for seconds, while direct
+  `Range` insertion plus one `input` event completed in milliseconds.
+  Keep the accelerator thresholded so ordinary small pastes retain the site's
+  native semantics, and preserve selection-replacement behavior in regression
+  tests.
+
 
 ### 4.6 Experiments that failed on chatgpt.com (do not re-attempt blindly)
 
