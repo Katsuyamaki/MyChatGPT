@@ -54,6 +54,7 @@ import androidx.core.splashscreen.SplashScreen;
 import androidx.core.splashscreen.SplashScreenViewProvider;
 import androidx.webkit.WebViewCompat;
 
+import com.katsuyamaki.mychatgpt.diagnostic.PerformanceProbe;
 import com.katsuyamaki.mychatgpt.webview.CrashTracker;
 import com.katsuyamaki.mychatgpt.webview.MainWebViewController;
 import com.katsuyamaki.mychatgpt.webview.LoadingStateController;
@@ -100,6 +101,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        PerformanceProbe.mark("activity_onCreate_enter", "savedState=" + (savedInstanceState != null));
 
         // ─── Android 12+ splash screen (v6.27) ──────────────────────────
         // MainActivity launches with Theme.AppSplash (see the manifest).
@@ -320,6 +322,7 @@ public class MainActivity extends Activity {
         // Wire the WebView up (initial setup; recreated in place if the
         // renderer ever dies — see onRenderProcessGone).
         setupMainWebView(webview);
+        PerformanceProbe.mark("main_webview_setup_complete");
 
         // Best-effort sweep of stale one-shot files (camera captures, shared
         // copies) so the cache directory cannot grow without bound.
@@ -342,6 +345,9 @@ public class MainActivity extends Activity {
         if (!restoredFromState) {
             mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
         }
+        PerformanceProbe.mark(
+                "initial_navigation_started",
+                "restored=" + restoredFromState);
 
         // Process share-from-outside intent AFTER the initial load has been
         // triggered, so shared text no longer causes a second duplicate
@@ -374,6 +380,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        PerformanceProbe.mark("activity_onStop");
         if (transferController != null) {
             transferController.onStop();
         }
@@ -392,6 +399,7 @@ public class MainActivity extends Activity {
 
                     @Override
                     public void onPageReady() {
+                        PerformanceProbe.mark("webview_page_ready");
                         if (loadingStateController != null
                                 && loadingStateController.onDomReady()) {
                             transferController.kickPendingSharePipelines();
@@ -553,6 +561,9 @@ public class MainActivity extends Activity {
                 boolean didCrash = (detail != null) && detail.didCrash();
                 String reasonStr = didCrash ? "CRASH" : "OOM_KILL";
                 Log.e(TAG, "WebView renderer gone; recreating WebView (main=" + wasMain + ", reason=" + reasonStr + ")");
+                PerformanceProbe.mark(
+                        "renderer_gone",
+                        "main=" + wasMain + " reason=" + reasonStr);
                 if (wasMain) {
                     loadingStateController.resetInitialLoad();
                     // Don't immediately show the loading overlay — let
@@ -576,12 +587,14 @@ public class MainActivity extends Activity {
             @Override
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
                 super.onPageStarted(v, url, favicon);
+                if (v == webview) PerformanceProbe.mark("webview_page_started");
                 loadingStateController.onPageStarted(v);
             }
 
             @Override
             public void onPageFinished(WebView v, String url) {
                 super.onPageFinished(v, url);
+                if (v == webview) PerformanceProbe.mark("webview_page_finished");
                 // Page loaded successfully → mark this launch as non-crashing.
                 CrashTracker.reset();
                 CookieManager.getInstance().flush();
@@ -811,11 +824,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        PerformanceProbe.mark("activity_onStart");
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        PerformanceProbe.mark("activity_onPause");
         // Reaching PAUSE proves this launch was real and interactive — any
         // process death while backgrounded afterwards is NORMAL lifecycle
         // (OEM task managers kill background processes aggressively,
@@ -851,6 +866,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        PerformanceProbe.mark("activity_onResume");
         if (mainWebViewController != null) mainWebViewController.resume(webview);
         if (popupAuthController != null) popupAuthController.resumeAll();
     }
@@ -858,6 +874,7 @@ public class MainActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        PerformanceProbe.mark("window_focus", "hasFocus=" + hasFocus);
         if (loadingStateController != null) {
             loadingStateController.onWindowFocusChanged(hasFocus);
         }
@@ -866,6 +883,7 @@ public class MainActivity extends Activity {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
+        PerformanceProbe.mark("configuration_changed");
         if (loadingStateController != null) {
             loadingStateController.updateTheme(newConfig);
         }
@@ -890,6 +908,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        PerformanceProbe.mark("activity_onDestroy");
         // A clean destroy is not a crash — reset the counter so abandoned
         // launches (no signal, swipe-away) no longer count toward the
         // "pick another WebView" bounce.
