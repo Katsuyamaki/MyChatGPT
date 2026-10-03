@@ -626,10 +626,9 @@ public final class ChatGptSiteContract {
             "AndroidBridge.debugLog('paste-perf '+m);}catch(e){}}" +
             "document.addEventListener('paste',function(e){try{" +
             "if(!composer(e.target))return;" +
-            "var t=performance.now(),n=0;" +
-            "try{n=String((e.clipboardData&&e.clipboardData.getData('text/plain'))||'').length;}catch(_){}" +
-            "window.__mychatgptPasteT0=t;window.__mychatgptPasteLen=n;" +
-            "dbg('normal event len='+n);" +
+            "var t=performance.now();" +
+            "window.__mychatgptPasteT0=t;" +
+            "dbg('normal event');" +
             "requestAnimationFrame(function(){dbg('normal raf elapsedMs='+Math.round(performance.now()-t));});" +
             "setTimeout(function(){dbg('normal timer0 elapsedMs='+Math.round(performance.now()-t));},0);" +
             "setTimeout(function(){dbg('normal timer100 elapsedMs='+Math.round(performance.now()-t));},100);" +
@@ -637,7 +636,7 @@ public final class ChatGptSiteContract {
             "}catch(_){}},true);" +
             "document.addEventListener('input',function(e){try{" +
             "var t=window.__mychatgptPasteT0||0;if(!t||!composer(e.target))return;" +
-            "dbg('normal input len='+(window.__mychatgptPasteLen||0)+' elapsedMs='+Math.round(performance.now()-t));" +
+            "dbg('normal input elapsedMs='+Math.round(performance.now()-t));" +
             "window.__mychatgptPasteT0=0;" +
             "}catch(_){}},true);" +
             "}catch(e){}})();";
