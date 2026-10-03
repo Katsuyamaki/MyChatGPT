@@ -26,6 +26,7 @@ import android.webkit.WebView;
 
 import com.google.android.material.progressindicator.LinearProgressIndicator;
 import com.katsuyamaki.mychatgpt.R;
+import com.katsuyamaki.mychatgpt.diagnostic.PerformanceProbe;
 import com.katsuyamaki.mychatgpt.site.ChatGptSiteContract;
 
 import java.util.Locale;
@@ -152,6 +153,7 @@ public final class LoadingStateController {
         if (initialLoadComplete) return;
         webView.postDelayed(() -> {
             if (loadingOverlay == null || initialLoadComplete) return;
+            PerformanceProbe.mark("loading_ready_fallback");
             hideLoadingOverlayNow();
         }, ChatGptSiteContract.PAGE_FINISHED_READY_FALLBACK_MS);
     }
@@ -162,6 +164,7 @@ public final class LoadingStateController {
      */
     public boolean onDomReady() {
         if (activity.isFinishing() || initialLoadComplete) return false;
+        PerformanceProbe.mark("loading_ready_dom");
         hideLoadingOverlayNow();
         return true;
     }
@@ -205,6 +208,7 @@ public final class LoadingStateController {
     private void hideLoadingOverlayNow() {
         if (loadingOverlay == null || initialLoadComplete) return;
         initialLoadComplete = true;
+        PerformanceProbe.mark("loading_overlay_fade_start");
 
         if (loadingProgressBar != null
                 && loadingProgressBar.getVisibility() == View.VISIBLE) {
@@ -221,6 +225,7 @@ public final class LoadingStateController {
             public void onAnimationEnd(Animation animation) {
                 loadingOverlay.setVisibility(View.GONE);
                 stopLoadingLogoAnimation();
+                PerformanceProbe.mark("loading_overlay_hidden");
             }
 
             @Override
@@ -338,6 +343,9 @@ public final class LoadingStateController {
         final int width = decor.getWidth();
         final int height = decor.getHeight();
         final int previousVisibility = resumeSnapshot.getVisibility();
+        PerformanceProbe.mark(
+                "resume_snapshot_capture_start",
+                "size=" + width + "x" + height);
         resumeSnapshot.setVisibility(View.GONE);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -352,12 +360,16 @@ public final class LoadingStateController {
                                 activity.runOnUiThread(() -> {
                                     replaceSnapshotBitmap(bitmap);
                                     resumeSnapshot.setVisibility(View.VISIBLE);
+                                    PerformanceProbe.mark("resume_snapshot_visible");
                                     if (activity.hasWindowFocus()) {
                                         scheduleSnapshotFadeOut(
                                                 RESUME_SNAPSHOT_FADE_DELAY_MS);
                                     }
                                 });
                             } else {
+                                PerformanceProbe.mark(
+                                        "resume_snapshot_capture_failed",
+                                        "code=" + result);
                                 Log.w(TAG,
                                         "snapshot PixelCopy failed code=" + result);
                                 activity.runOnUiThread(() -> {
@@ -420,6 +432,7 @@ public final class LoadingStateController {
                             resumeSnapshotBitmap.recycle();
                             resumeSnapshotBitmap = null;
                         }
+                        PerformanceProbe.mark("resume_snapshot_hidden");
                     }
                 }), delayMs);
     }
