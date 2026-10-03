@@ -619,6 +619,8 @@ public final class ChatGptSiteContract {
      * intercept the user paste before the site/browser fallback, update the
      * active selection directly, then dispatch one input event so ChatGPT can
      * synchronize its editor state. Small pastes stay on the site's normal path.
+     * Keep the 2 KiB threshold and selection-replacement regression cases in
+     * sync with WEBSITE_SPECIFICS.md when changing this path.
      */
     public static final String LARGE_PASTE_ACCELERATOR_JS =
             "(function(){try{" +
