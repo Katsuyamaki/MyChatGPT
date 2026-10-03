@@ -79,6 +79,7 @@ import java.util.Locale;
 public class MainActivity extends Activity {
 
     private static final String TAG = "MyChatGPTApp";
+    private static final String PASTE_PERF_TAG = "MyChatGPTPastePerf";
     private static final String PREFS_NAME = "webgpt_prefs";
 
     private static final int REQUEST_MEDIA_PERM = 1004;
@@ -443,6 +444,12 @@ public class MainActivity extends Activity {
                         webView,
                         ChatGptSiteContract.WALLPAPER_TRANSPARENCY_JS,
                         java.util.Collections.singleton("*"));
+                if (BuildConfig.EXPERIMENTAL) {
+                    WebViewCompat.addDocumentStartJavaScript(
+                            webView,
+                            ChatGptSiteContract.PASTE_PERF_PROBE_JS,
+                            java.util.Collections.singleton("*"));
+                }
                 WebViewCompat.addDocumentStartJavaScript(
                         webView,
                         ChatGptSiteContract.LARGE_PASTE_ACCELERATOR_JS,
@@ -471,7 +478,12 @@ public class MainActivity extends Activity {
                 // Do not mirror the site's console (it can contain chat
                 // fragments) into logcat on release builds.
                 if (BuildConfig.EXPERIMENTAL) {
-                    Log.d(TAG, cm.message() + " -- line " + cm.lineNumber() + " of " + cm.sourceId());
+                    String message = cm.message();
+                    if (message != null && message.startsWith("MYCHATGPT_PASTE_PROBE ")) {
+                        Log.d(PASTE_PERF_TAG, message);
+                    } else {
+                        Log.d(TAG, message + " -- line " + cm.lineNumber() + " of " + cm.sourceId());
+                    }
                 }
                 return true;
             }
