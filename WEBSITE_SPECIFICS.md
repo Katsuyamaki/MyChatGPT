@@ -249,7 +249,7 @@ orders of magnitude slower when Chromium/site editing falls through
 `document.execCommand('insertText')`. The production workaround is
 main-frame only and deliberately narrow:
 
-- pastes below 2,048 characters stay on ChatGPT's normal path;
+- pastes below 768 characters stay on ChatGPT's normal path in the V010 experiment;
 - larger `paste` events are intercepted in capture phase, preserving the
   active selection/replacement range;
 - contenteditable text is inserted directly with a DOM `Range` (text
@@ -719,11 +719,14 @@ series; most also have a comment at the relevant code site.
   `app:`-namespace attribute on plain framework views in this app's
   non-AppCompat activities.
 - **P18 — Avoid `execCommand('insertText')` for large composer pastes.**
-  On the tested Android WebView, multi-kilobyte inserts through that legacy
-  editing path stalled the JS/main thread for seconds, while direct
+  On the tested Android WebView, both multi-kilobyte inserts and repeated
+  ~800-900 character Gboard pastes through that legacy editing path can stall
+  the JS/main thread for seconds, while direct
   `Range` insertion plus one `input` event completed in milliseconds.
   Keep the accelerator thresholded so ordinary small pastes retain the site's
-  native semantics, and preserve selection-replacement behavior in regression
+  native semantics. V010 tests a 768-character boundary because owner-device
+  evidence reproduced the normal-path stall at 887 characters. Preserve
+  selection-replacement behavior in regression
   tests.
 
 
