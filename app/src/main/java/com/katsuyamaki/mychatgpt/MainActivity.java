@@ -55,6 +55,7 @@ import androidx.webkit.WebViewCompat;
 
 import com.katsuyamaki.mychatgpt.webview.CrashTracker;
 import com.katsuyamaki.mychatgpt.webview.MainWebViewController;
+import com.katsuyamaki.mychatgpt.webview.LoadingStateController;
 import com.katsuyamaki.mychatgpt.webview.PopupAuthController;
 import com.katsuyamaki.mychatgpt.webview.TransferController;
 import com.katsuyamaki.mychatgpt.webview.WebBridgeController;
@@ -81,26 +82,7 @@ public class MainActivity extends Activity {
 
     WebView webview;
     ViewGroup rootLayout;
-    View loadingOverlay;
-    ImageView loadingLogo;
-    LinearProgressIndicator loadingProgressBar;
-    AnimatorSet loadingLogoAnim;
-    /** Snapshot overlay shown on top of rootLayout during resume to mask
-     *  the brief GPU-surface-recreation black flash. Captured when the
-     *  activity loses window focus (just before onPause), faded out 300ms
-     *  after the activity regains focus. Fixes the "brief black screen
-     *  flash on resume from task manager" symptom (which is NOT a renderer
-     *  death — onRenderProcessGone never fires, the WebView is alive). */
-    ImageView resumeSnapshot;
-    Bitmap resumeSnapshotBitmap;
-    final Handler snapshotHandler = new Handler();
-    /**
-     * True once the initial page load has completed and the loading overlay
-     * has started fading out. After this point, SPA navigations (which fire
-     * onPageStarted/onPageFinished for in-page route changes like ChatGPT's
-     * settings tabs) are ignored — they must NOT re-show the loading overlay.
-     */
-    boolean initialLoadComplete = false;
+    private LoadingStateController loadingStateController;
     private MainWebViewController mainWebViewController;
     private PopupAuthController popupAuthController;
     private TransferController transferController;
@@ -268,7 +250,8 @@ public class MainActivity extends Activity {
 
                     @Override
                     public boolean isInitialLoadComplete() {
-                        return initialLoadComplete;
+                        return loadingStateController != null
+                                && loadingStateController.isInitialLoadComplete();
                     }
                 });
         popupAuthController = new PopupAuthController(
@@ -306,88 +289,15 @@ public class MainActivity extends Activity {
                         return transferController.openFileChooser(callback);
                     }
                 });
-        loadingOverlay = findViewById(R.id.loading_overlay);
-        loadingLogo = findViewById(R.id.loading_logo);
-        loadingProgressBar = findViewById(R.id.loading_progress_bar);
-        // Bar visibility follows the Settings toggle (off by default); it
-        // is re-synced every time the loading screen appears.
-        syncLoadingProgressBar();
+        loadingStateController =
+                new LoadingStateController(this, rootLayout);
 
-        // PRIMARY FIX (Bug 2): pin the window + rootLayout background to the
-        // same dark-grey / white the WebView itself uses. Without this, the
-        // ~1-frame GPU-surface-teardown gap on resume from task manager shows
-        // the activity theme's pure-black colorBackground bleeding through a
-        // transparent rootLayout — exactly the "brief black flash" symptom.
-        // The resumeSnapshot PixelCopy overlay is a stronger mask when it
-        // succeeds, but it's a race (vis=8 / GONE if PixelCopy's async
-        // callback hasn't fired by onWindowFocusChanged(true)); this
-        // background-color fallback is the reliable primary defense.
+        // Keep the window/root/system-bar background work Activity-owned:
+        // these surfaces outlive the loading overlay and later become part of
+        // the native shell/wallpaper layer.
         applyBackgroundColors();
-        // Status/navigation bars from the same theme tokens (re-applied on
-        // live dark/light switches in onConfigurationChanged — see the
-        // method comment; the theme covers the initial state, this makes
-        // one code path for both).
         applySystemBarColors();
-
-        // v6.24.31 diagnostic: log the panel's refresh-rate situation so we
-        // can tell whether this OEM throttles third-party apps to 60Hz
-        // while Chrome runs at 90/120Hz (a common Samsung/Xiaomi behavior,
-        // and a classic cause of "the site feels smoother in the browser").
-        // Logcat-only — zero runtime cost.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                Display disp = getWindowManager().getDefaultDisplay();
-                Display.Mode cur = disp.getMode();
-                StringBuilder modes = new StringBuilder();
-                for (Display.Mode m : disp.getSupportedModes()) {
-                    modes.append(String.format(Locale.US, "%dx%d@%.0f ",
-                            m.getPhysicalWidth(), m.getPhysicalHeight(),
-                            m.getRefreshRate()));
-                }
-                Log.d(TAG, String.format(Locale.US,
-                        "display: current mode %dx%d@%.0fHz, supported: %s",
-                        cur.getPhysicalWidth(), cur.getPhysicalHeight(),
-                        cur.getRefreshRate(), modes.toString().trim()));
-            } catch (Throwable t) {
-                Log.e(TAG, "display mode query failed", t);
-            }
-        }
-
-        // Resume-snapshot overlay: an ImageView placed at the topmost
-        // position of the DECOR VIEW — i.e. covering the FULL WINDOW,
-        // including the status-bar strip. This MUST match the geometry of
-        // what PixelCopy.request(getWindow(), ...) captures (the whole
-        // window). The v6.24.28/29 version added this ImageView to
-        // rootLayout instead, which is only the content area BELOW the
-        // status bar — so the full-window bitmap was scaled down ~4% to fit,
-        // drawing a second black status-bar strip under the real one for the
-        // 300ms the overlay was visible (the "app height is bugged for a
-        // fraction of a second on resume from task manager" report).
-        // Normally GONE; briefly VISIBLE during activity-resume to mask the
-        // GPU-surface-recreation flash with a pixel-perfect copy of the
-        // previous frame.
-        resumeSnapshot = new ImageView(this);
-        resumeSnapshot.setLayoutParams(new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
-        resumeSnapshot.setVisibility(View.GONE);
-        try {
-            ((ViewGroup) getWindow().getDecorView()).addView(resumeSnapshot);
-        } catch (Throwable t) {
-            // Should never happen (DecorView is a FrameLayout), but never
-            // let an overlay problem take the app down — disable the mask.
-            Log.e(TAG, "snapshot overlay attach failed", t);
-            resumeSnapshot = null;
-        }
-
-        // Set correct logo color based on theme (black for light mode, white for dark mode)
-        boolean isDark = isDarkMode();
-        loadingLogo.setImageResource(isDark ? R.drawable.logo_white : R.drawable.logo_black);
-
-        // Start the loading animation (v6.28: property animators on a
-        // hardware layer — see startLoadingLogoAnimation for why the old
-        // R.anim.spin_fade view animation was replaced)
-        startLoadingLogoAnimation();
+        loadingStateController.initializePresentation();
 
         // Wire the WebView up (initial setup; recreated in place if the
         // renderer ever dies — see onRenderProcessGone).
@@ -464,7 +374,10 @@ public class MainActivity extends Activity {
 
                     @Override
                     public void onPageReady() {
-                        onDomReady();
+                        if (loadingStateController != null
+                                && loadingStateController.onDomReady()) {
+                            transferController.kickPendingSharePipelines();
+                        }
                     }
                 });
     }
@@ -534,8 +447,7 @@ public class MainActivity extends Activity {
      * {@code ?android:attr/colorBackground} (#000000 in dark mode) is what
      * the user sees during the ~1-frame gap between the window being
      * re-attached and the WebView repainting — which is exactly the
-     * "brief black flash" Bug 2 report. The {@link #resumeSnapshot}
-     * PixelCopy overlay is a stronger mask when it succeeds, but it is a
+     * "brief black flash" Bug 2 report. The LoadingStateController PixelCopy resume overlay is a stronger mask when it succeeds, but it is a
      * race (the snapshot is GONE if PixelCopy's async callback hasn't
      * fired by the time {@code onWindowFocusChanged(true)} runs — see
      * toast "snapshot: no overlay to fade (vis=8)"). This background-color
@@ -611,32 +523,7 @@ public class MainActivity extends Activity {
 
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
-                // Optional page-progress bar at the top of the loading
-                // screen (Settings → Interface, off by default).
-                // ⚠ The raw WebView progress LIES on chatgpt.com: it
-                // reaches 100 as soon as the HTML shell has loaded,
-                // long before the SPA has hydrated — the "misleading
-                // full load" that ChatGptSiteContract.PAGE_READY_WATCHER_JS exists to
-                // detect (the SAME chatgpt.com-exclusive system the
-                // loading screen itself waits on; see WEBSITE_SPECIFICS
-                // §2.4). Driving the bar with the raw value made it
-                // claim "fully loaded" while the overlay was still up.
-                // So the raw percentage is mapped onto the first 90% of
-                // the bar, and the last 10% is reserved: it is only ever
-                // completed by hideLoadingOverlayNow(), i.e. at the
-                // exact moment the real-ready signal fires and the
-                // loading screen starts fading. setProgressCompat
-                // animates between values per the Material motion spec.
-                // The overlay guard keeps SPA navigations (which also
-                // fire progress long after the first paint) from
-                // touching a bar that is not on screen.
-                if (loadingProgressBar != null
-                        && loadingOverlay != null
-                        && !initialLoadComplete
-                        && loadingOverlay.getVisibility() == View.VISIBLE) {
-                    int clamped = Math.max(0, Math.min(100, newProgress));
-                    loadingProgressBar.setProgressCompat(clamped * 9 / 10, true);
-                }
+                loadingStateController.onProgressChanged(newProgress);
             }
 
             @Override
@@ -718,7 +605,7 @@ public class MainActivity extends Activity {
                 String reasonStr = didCrash ? "CRASH" : "OOM_KILL";
                 Log.e(TAG, "WebView renderer gone; recreating WebView (main=" + wasMain + ", reason=" + reasonStr + ")");
                 if (wasMain) {
-                    initialLoadComplete = false;
+                    loadingStateController.resetInitialLoad();
                     // Don't immediately show the loading overlay — let
                     // onPageStarted's 200ms-delayed show handle it. If the
                     // page reloads from cache within that window (typical on
@@ -740,30 +627,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
                 super.onPageStarted(v, url, favicon);
-                // Only show the loading overlay during the INITIAL page load.
-                // Once initialLoadComplete is true, SPA navigations (ChatGPT's
-                // settings tabs, share popups, etc.) fire onPageStarted too —
-                // but we ignore them so the overlay doesn't flash.
-                if (!initialLoadComplete && loadingOverlay != null
-                        && loadingOverlay.getVisibility() != View.VISIBLE) {
-                    // Delay showing the overlay by 200ms. If the page loads
-                    // from cache within that window (common on resume after
-                    // renderer-gone), the overlay never appears and the user
-                    // is spared the brief loading-screen flash. If the page
-                    // takes longer, the overlay shows as usual.
-                    webview.postDelayed(() -> {
-                        if (!initialLoadComplete && loadingOverlay != null
-                                && loadingOverlay.getVisibility() != View.VISIBLE) {
-                            loadingOverlay.setVisibility(View.VISIBLE);
-                            if (loadingLogo != null) {
-                                boolean dark = isDarkMode();
-                                loadingLogo.setImageResource(dark ? R.drawable.logo_white : R.drawable.logo_black);
-                                startLoadingLogoAnimation();
-                            }
-                            syncLoadingProgressBar();
-                        }
-                    }, 200);
-                }
+                loadingStateController.onPageStarted(v);
             }
 
             @Override
@@ -774,155 +638,10 @@ public class MainActivity extends Activity {
                 CookieManager.getInstance().flush();
                 injectAllOverrides(v);
                 transferController.kickPendingSharePipelines();
-                // If the initial load is already complete (SPA navigation or
-                // the DOM-ready signal already fired), do nothing — no
-                // overlay to hide.
-                if (initialLoadComplete) return;
-                // FALLBACK ONLY. The primary overlay-dismissal signal is the
-                // DOM-ready watcher (ChatGptSiteContract.PAGE_READY_WATCHER_JS → onDomReady),
-                // which fires the moment the composer + late splash markers
-                // are really rendered — usually well before or after this
-                // point, never tied to the load event. This timer only
-                // guarantees the overlay cannot get stuck if the watcher
-                // never ran at all (ancient WebView, bridge failure).
-                webview.postDelayed(() -> {
-                    if (loadingOverlay == null || initialLoadComplete) return;
-                    hideLoadingOverlayNow();
-                }, ChatGptSiteContract.PAGE_FINISHED_READY_FALLBACK_MS);
+                loadingStateController.onPageFinished(v);
             }
 
         });
-    }
-
-    /**
-     * DOM-ready signal from the page (AndroidBridge.pageReady, driven by
-     * ChatGptSiteContract.PAGE_READY_WATCHER_JS): the composer plus the last-appearing splash
-     * elements are REALLY in the rendered DOM. Dismiss the loading overlay
-     * right now — no blind delay, no waiting for the load event.
-     * Idempotent: after the first call (or the fallback path) the
-     * initialLoadComplete flag makes every later signal a no-op, so SPA
-     * re-navigation, OAuth round trips and renderer-crash reloads are all
-     * safe. (Renderer crash resets the flag and shows the overlay again —
-     * the fresh document re-runs the watcher and re-fires this.)
-     */
-    void onDomReady() {
-        if (isFinishing() || initialLoadComplete) return;
-        hideLoadingOverlayNow();
-        // A share arrived while the page was still booting: the DOM signal
-        // means the composer is interactive NOW — start the pipeline
-        // immediately instead of waiting for onPageFinished.
-        transferController.kickPendingSharePipelines();
-    }
-
-    /**
-     * Set initialLoadComplete and fade the loading overlay out.
-     * The flag is set BEFORE starting the animation: any onPageStarted that
-     * fires during the fade window sees initialLoadComplete=true and skips
-     * re-showing the overlay (SPA navigation during fade-out used to make
-     * the loading screen flash).
-     */
-    private void hideLoadingOverlayNow() {
-        if (loadingOverlay == null || initialLoadComplete) return;
-        initialLoadComplete = true;
-        // The real-ready signal just fired → complete the optional
-        // progress bar (capped at 90% while the page loads — see
-        // onProgressChanged) in the same instant the overlay starts
-        // fading. "Bar full" and "loading screen gone" are therefore the
-        // same event: the bar can never claim the page is ready while
-        // the chatgpt.com misleading-full-load detection is still
-        // waiting for hydration.
-        if (loadingProgressBar != null
-                && loadingProgressBar.getVisibility() == View.VISIBLE) {
-            loadingProgressBar.setProgressCompat(100, true);
-        }
-        Animation fadeOut = AnimationUtils.loadAnimation(MainActivity.this, R.anim.fade_out);
-        fadeOut.setAnimationListener(new Animation.AnimationListener() {
-            @Override
-            public void onAnimationStart(Animation animation) {}
-            @Override
-            public void onAnimationEnd(Animation animation) {
-                loadingOverlay.setVisibility(View.GONE);
-                stopLoadingLogoAnimation();
-            }
-            @Override
-            public void onAnimationRepeat(Animation animation) {}
-        });
-        loadingOverlay.startAnimation(fadeOut);
-    }
-
-    /**
-     * Loading-logo animation (v6.28). The old R.anim.spin_fade VIEW
-     * animation (rotate + alpha applied as per-frame transformations of a
-     * software-rendered view) visibly stuttered while the WebView was busy
-     * loading the page. Property animators (View.ROTATION / View.ALPHA)
-     * plus a hardware layer for the duration of the animation fix that: the
-     * logo bitmap is pinned in a GPU texture and the transforms are applied
-     * by the render thread, so page-load work on the UI thread can no
-     * longer stall the spin. Same visual as before: one revolution per 2 s
-     * (linear), alpha 0.3 → 1 → 0.3 per 2 s cycle (the calm "thinking"
-     * pulse).
-     */
-    private void startLoadingLogoAnimation() {
-        if (loadingLogo == null) return;
-        stopLoadingLogoAnimation();
-        // Hardware layer only while animating — releases the texture when
-        // the loading screen goes away (see stopLoadingLogoAnimation).
-        loadingLogo.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-
-        ObjectAnimator spin = ObjectAnimator.ofFloat(
-                loadingLogo, View.ROTATION, 0f, 360f);
-        spin.setDuration(2000L);
-        spin.setInterpolator(new LinearInterpolator());
-        spin.setRepeatCount(ValueAnimator.INFINITE);
-        spin.setRepeatMode(ValueAnimator.RESTART);
-
-        ObjectAnimator pulse = ObjectAnimator.ofFloat(
-                loadingLogo, View.ALPHA, 0.3f, 1f);
-        pulse.setDuration(1000L);
-        pulse.setInterpolator(new AccelerateDecelerateInterpolator());
-        pulse.setRepeatCount(ValueAnimator.INFINITE);
-        pulse.setRepeatMode(ValueAnimator.REVERSE);
-
-        loadingLogoAnim = new AnimatorSet();
-        loadingLogoAnim.playTogether(spin, pulse);
-        loadingLogoAnim.start();
-    }
-
-    /**
-     * Cancels the loading-logo animation and releases its hardware layer.
-     * Called whenever the loading overlay leaves the screen (fade-out end,
-     * offline dialog, activity destroy) and before a restart.
-     */
-    private void stopLoadingLogoAnimation() {
-        if (loadingLogoAnim != null) {
-            loadingLogoAnim.cancel();
-            loadingLogoAnim = null;
-        }
-        if (loadingLogo != null) {
-            loadingLogo.clearAnimation();
-            loadingLogo.setLayerType(View.LAYER_TYPE_NONE, null);
-        }
-    }
-
-    /**
-     * Re-syncs the optional page-progress bar with the Settings toggle
-     * ("Show page loading progress", off by default) and resets it for a
-     * fresh load. Called every time the loading overlay (re)appears — cold
-     * start, offline retry, renderer-crash reload — so the bar always
-     * starts empty and in step with the logo. The pref is read fresh each
-     * time, so toggling it takes effect on the next load without a restart.
-     */
-    private void syncLoadingProgressBar() {
-        if (loadingProgressBar == null) return;
-        boolean show = false;
-        try {
-            show = getSharedPreferences("webgpt_prefs", MODE_PRIVATE)
-                    .getBoolean("loading_progress", false);
-        } catch (Throwable t) {
-            Log.e(TAG, "loading-progress pref read failed", t);
-        }
-        loadingProgressBar.setVisibility(show ? View.VISIBLE : View.GONE);
-        if (show) loadingProgressBar.setProgressCompat(0, false);
     }
 
     /** onPageFinished fallback (and re-injection after SPA navigations). */
@@ -1079,22 +798,14 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed() || offlineDialogShowing) return;
             offlineDialogShowing = true;
-            if (loadingOverlay != null) loadingOverlay.setVisibility(View.GONE);
+            loadingStateController.hideForOfflineDialog();
             new com.google.android.material.dialog.MaterialAlertDialogBuilder(MainActivity.this)
                     .setTitle("Connection problem")
                     .setMessage("Couldn't load chatgpt.com. Check your internet connection and try again.")
                     .setCancelable(false)
                     .setPositiveButton("Retry", (d, w) -> {
                         offlineDialogShowing = false;
-                        initialLoadComplete = false;
-                        if (loadingOverlay != null) {
-                            loadingOverlay.setVisibility(View.VISIBLE);
-                            // The overlay was force-hidden while the dialog
-                            // was up: restart the logo animation and re-sync
-                            // the optional progress bar for the fresh load.
-                            startLoadingLogoAnimation();
-                            syncLoadingProgressBar();
-                        }
+                        loadingStateController.showForRetry();
                         mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
                     })
                     .setNegativeButton("Close app", (d, w) -> {
@@ -1192,131 +903,16 @@ public class MainActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (!hasFocus) {
-            // Activity is about to be backgrounded — capture a snapshot
-            // NOW (before onPause, while the surface is still alive) so we
-            // can mask the black flash on resume.
-            captureResumeSnapshot();
-        } else {
-            // Activity just regained focus — schedule the snapshot to fade
-            // out 300ms from now, giving the WebView time to repaint.
-            scheduleSnapshotFadeOut(300);
+        if (loadingStateController != null) {
+            loadingStateController.onWindowFocusChanged(hasFocus);
         }
-    }
-
-    /**
-     * Capture a bitmap of the FULL WINDOW (DecorView: WebView, any open
-     * popups, and the status-bar strip) and display it on top via
-     * {@link #resumeSnapshot}. Uses PixelCopy on API 26+ (reliable on
-     * hardware-accelerated views) and falls back to a software canvas draw on
-     * older API levels. The bitmap is sized to the DecorView — the SAME
-     * geometry PixelCopy.request(getWindow(), ...) captures and the SAME
-     * geometry the overlay occupies — so it is displayed 1:1 with no scaling.
-     * (v6.24.28/29 sized the bitmap to rootLayout but copied the whole
-     * window, then showed it inside a rootLayout-sized overlay: the bitmap
-     * was squeezed down by the status-bar height, producing a shrunken app
-     * with a second black status-bar strip for ~300ms on resume.)
-     */
-    private void captureResumeSnapshot() {
-        if (resumeSnapshot == null) return;
-        View decor = getWindow() != null ? (View) getWindow().getDecorView() : null;
-        if (decor == null || decor.getWidth() <= 0 || decor.getHeight() <= 0) {
-            return;
-        }
-        final int w = decor.getWidth();
-        final int h = decor.getHeight();
-        // Hide the snapshot ImageView itself while capturing so we don't
-        // recursively capture our own overlay.
-        final int prevVis = resumeSnapshot.getVisibility();
-        resumeSnapshot.setVisibility(View.GONE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // PixelCopy (API 26+) is async and reliable on hardware-accelerated
-            // views. Capture the whole window (PixelCopy.request only accepts
-            // Surface / SurfaceView / Window — there is no View overload).
-            try {
-                final Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                PixelCopy.request(getWindow(), bmp, result -> {
-                    if (result == PixelCopy.SUCCESS) {
-                        runOnUiThread(() -> {
-                            if (resumeSnapshotBitmap != null) {
-                                resumeSnapshotBitmap.recycle();
-                            }
-                            resumeSnapshotBitmap = bmp;
-                            resumeSnapshot.setImageBitmap(bmp);
-                            resumeSnapshot.setVisibility(View.VISIBLE);
-                            // Late-callback safety: if window focus has
-                            // ALREADY been regained by the time this async
-                            // copy completes, onWindowFocusChanged(true) has
-                            // come and gone and nothing would schedule the
-                            // fade-out — the overlay would be stuck on top
-                            // forever. Schedule it here instead.
-                            if (hasWindowFocus()) scheduleSnapshotFadeOut(300);
-                        });
-                    } else {
-                        Log.w(TAG, "snapshot PixelCopy failed code=" + result);
-                        // Restore previous visibility (probably GONE) on failure
-                        runOnUiThread(() -> resumeSnapshot.setVisibility(prevVis));
-                    }
-                }, snapshotHandler);
-            } catch (Throwable t) {
-                Log.e(TAG, "PixelCopy threw", t);
-                Log.w(TAG, "snapshot PixelCopy threw: " + t.getClass().getSimpleName());
-                resumeSnapshot.setVisibility(prevVis);
-            }
-        } else {
-            // Pre-API-26 fallback: software canvas draw. Less reliable for
-            // GPU-rendered content but better than nothing.
-            try {
-                Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                Canvas canvas = new Canvas(bmp);
-                decor.draw(canvas);
-                if (resumeSnapshotBitmap != null) {
-                    resumeSnapshotBitmap.recycle();
-                }
-                resumeSnapshotBitmap = bmp;
-                resumeSnapshot.setImageBitmap(bmp);
-                resumeSnapshot.setVisibility(View.VISIBLE);
-            } catch (Throwable t) {
-                Log.e(TAG, "snapshot draw threw", t);
-                resumeSnapshot.setVisibility(prevVis);
-            }
-        }
-    }
-
-    /**
-     * Schedule the resume snapshot overlay to fade out and hide after
-     * {@code delayMs} milliseconds. Idempotent — multiple calls in flight
-     * will just keep rescheduling.
-     */
-    private void scheduleSnapshotFadeOut(int delayMs) {
-        if (resumeSnapshot == null || resumeSnapshot.getVisibility() != View.VISIBLE) {
-            return;
-        }
-        snapshotHandler.removeCallbacksAndMessages(null);
-        snapshotHandler.postDelayed(() -> {
-            runOnUiThread(() -> {
-                if (resumeSnapshot != null
-                        && resumeSnapshot.getVisibility() == View.VISIBLE) {
-                    resumeSnapshot.setVisibility(View.GONE);
-                    resumeSnapshot.setImageBitmap(null);
-                    if (resumeSnapshotBitmap != null) {
-                        resumeSnapshotBitmap.recycle();
-                        resumeSnapshotBitmap = null;
-                    }
-                }
-            });
-        }, delayMs);
     }
 
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        // uiMode is now in configChanges — re-tint the loading logo ourselves
-        // instead of letting the activity (and WebView) be recreated.
-        if (loadingLogo != null) {
-            boolean dark = (newConfig.uiMode & Configuration.UI_MODE_NIGHT_MASK)
-                    == Configuration.UI_MODE_NIGHT_YES;
-            loadingLogo.setImageResource(dark ? R.drawable.logo_white : R.drawable.logo_black);
+        if (loadingStateController != null) {
+            loadingStateController.updateTheme(newConfig);
         }
         // Re-apply the window + rootLayout background color so it tracks the
         // new theme — otherwise a dark→light switch would leave the window
@@ -1353,10 +949,9 @@ public class MainActivity extends Activity {
         if (transferController != null) {
             transferController.destroy();
         }
-        if (loadingLogo != null) {
-            loadingLogo.clearAnimation();
+        if (loadingStateController != null) {
+            loadingStateController.destroy();
         }
-        stopLoadingLogoAnimation();
         if (mainWebViewController != null) {
             mainWebViewController.destroyMainWebView(webview);
         } else if (webview != null) {
