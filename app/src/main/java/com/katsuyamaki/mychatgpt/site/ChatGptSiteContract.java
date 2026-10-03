@@ -686,29 +686,33 @@ public final class ChatGptSiteContract {
             "try{el.setSelectionRange(start+text.length,start+text.length);}catch(_){}" +
             "el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));" +
             "}else{" +
-            "mode='execCommand';" +
-            "var sel=window.getSelection();" +
-            "if(!sel||!sel.rangeCount||!el.contains(sel.anchorNode)){" +
-            "var r=document.createRange();r.selectNodeContents(el);r.collapse(false);" +
-            "sel=window.getSelection();sel.removeAllRanges();sel.addRange(r);" +
+            "mode='range-direct';" +
+            "var s=window.getSelection();" +
+            "if(!s||!s.rangeCount||!el.contains(s.anchorNode)){" +
+            "var endRange=document.createRange();endRange.selectNodeContents(el);endRange.collapse(false);" +
+            "s=window.getSelection();s.removeAllRanges();s.addRange(endRange);" +
             "}" +
-            "var ok=false;try{ok=document.execCommand('insertText',false,text);}catch(_){}" +
-            "if(!ok){" +
-            "mode='range-fallback';" +
-            "var s=window.getSelection();var rr=(s&&s.rangeCount)?s.getRangeAt(0):null;" +
-            "if(rr){rr.deleteContents();var node=document.createTextNode(text);rr.insertNode(node);" +
-            "rr.setStartAfter(node);rr.collapse(true);s.removeAllRanges();s.addRange(rr);}" +
+            "var rr=(s&&s.rangeCount)?s.getRangeAt(0):null;" +
+            "var domStart=performance.now();" +
+            "if(!rr)return 'error|no-range|'+text.length+'|0';" +
+            "rr.deleteContents();" +
+            "var node=document.createTextNode(text);rr.insertNode(node);" +
+            "rr.setStartAfter(node);rr.collapse(true);s.removeAllRanges();s.addRange(rr);" +
+            "var domMs=Math.round(performance.now()-domStart);" +
+            "var eventStart=performance.now();" +
             "el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));" +
-            "}" +
+            "var eventMs=Math.round(performance.now()-eventStart);" +
             "}" +
             "var ms=Math.round(performance.now()-t);" +
             "try{if(window.AndroidBridge&&AndroidBridge.debugLog)" +
-            "AndroidBridge.debugLog('paste-perf fast commit len='+text.length+' jsMs='+ms+' mode='+mode);}catch(_){}" +
+            "AndroidBridge.debugLog('paste-perf fast commit len='+text.length+' jsMs='+ms+' mode='+mode" +
+            "+(mode==='range-direct'?' domMs='+domMs+' inputMs='+eventMs:''));}catch(_){}" +
             "requestAnimationFrame(function(){try{if(window.AndroidBridge&&AndroidBridge.debugLog)" +
             "AndroidBridge.debugLog('paste-perf fast raf elapsedMs='+Math.round(performance.now()-t));}catch(_){}});" +
             "setTimeout(function(){try{if(window.AndroidBridge&&AndroidBridge.debugLog)" +
             "AndroidBridge.debugLog('paste-perf fast timer0 elapsedMs='+Math.round(performance.now()-t));}catch(_){}} ,0);" +
-            "return 'ok|'+text.length+'|'+ms+'|'+mode;" +
+            "return 'ok|'+text.length+'|'+ms+'|'+mode" +
+            "+(mode==='range-direct'?'|'+domMs+'|'+eventMs:'');" +
             "}catch(e){return 'error|'+String(e)+'|0|0';}})();";
 
     // Java-side polling / attachment timings inherited from WebGPT's
