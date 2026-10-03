@@ -619,7 +619,7 @@ public final class ChatGptSiteContract {
             "if(window.__mychatgptPasteDiag)return;window.__mychatgptPasteDiag=true;" +
             "if(window.top!==window)return;" +
             "function composer(el){try{return !!(el&&(el.id==='prompt-textarea'" +
-            "||(el.matches&&el.matches('div[contenteditable=\\"true\\"][role=\\"textbox\\"]'))" +
+            "||(el.matches&&el.matches('div[contenteditable=\"true\"][role=\"textbox\"]'))" +
             "||(el.closest&&el.closest('#prompt-textarea'))" +
             "||(el.tagName==='TEXTAREA')));}catch(e){return false;}}" +
             "function dbg(m){try{if(window.AndroidBridge&&AndroidBridge.debugLog)" +
@@ -664,8 +664,8 @@ public final class ChatGptSiteContract {
             "var text=String(window.__mychatgptFastPasteBuffer||'');" +
             "window.__mychatgptFastPasteBuffer='';" +
             "var el=document.querySelector('#prompt-textarea')" +
-            "||document.querySelector('div[contenteditable=\\"true\\"][role=\\"textbox\\"]')" +
-            "||document.querySelector('div[contenteditable=\\"true\\"]')" +
+            "||document.querySelector('div[contenteditable=\"true\"][role=\"textbox\"]')" +
+            "||document.querySelector('div[contenteditable=\"true\"]')" +
             "||document.querySelector('textarea[placeholder]');" +
             "if(!el)return 'error|no-composer|'+text.length+'|0';" +
             "window.__webgptShareActiveUntil=Date.now()+6000;" +
