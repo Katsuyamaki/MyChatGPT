@@ -390,7 +390,7 @@ public final class ChatGptSiteContract {
              * equivalent of Puppeteer's networkidle heuristic. */
             "  try {" +
             "    if (!window.__webgptLoad) {" +
-            "      var L = {lastMut: Date.now(), lastStart: Date.now(), n: 0};" +
+            "      var L = {lastMut: Date.now(), lastStart: Date.now(), n: 0, mo: null};" +
             "      window.__webgptLoad = L;" +
             "      var origFetch = window.fetch;" +
             "      if (origFetch) {" +
@@ -405,6 +405,7 @@ public final class ChatGptSiteContract {
             "        return origOpen.apply(this, arguments);" +
             "      };" +
             "      var mo = new MutationObserver(function(muts){ L.n += muts.length; L.lastMut = Date.now(); });" +
+            "      L.mo = mo;" +
             "      mo.observe(document, {childList: true, subtree: true, attributes: true, characterData: true});" +
             "    }" +
             "  } catch(e) {}" +
@@ -460,6 +461,10 @@ public final class ChatGptSiteContract {
             "    function fire(){" +
             "      if (sent) return;" +
             "      sent = true;" +
+            "      /* The load tracker only exists to decide when the initial SPA is ready. */" +
+            "      /* Leaving a subtree+attributes+characterData observer alive makes every */" +
+            "      large composer edit pay observer bookkeeping for the lifetime of the chat. */" +
+            "      try { var L=window.__webgptLoad; if(L&&L.mo){L.mo.disconnect();L.mo=null;} } catch(e) {}" +
             "      try {" +
             "        if (window.AndroidBridge && window.AndroidBridge.pageReady)" +
             "          window.AndroidBridge.pageReady();" +
@@ -603,6 +608,76 @@ public final class ChatGptSiteContract {
             "style.textContent=css;" +
             "root.style.setProperty('background-color','transparent','important');" +
             "if(d.body)d.body.style.setProperty('background-color','transparent','important');" +
+            "}catch(e){}})();";
+
+
+    /**
+     * Large-paste accelerator for the ChatGPT composer.
+     *
+     * Chromium's legacy execCommand('insertText') path becomes extremely slow
+     * for multi-kilobyte contenteditable inserts. For large plain-text pastes,
+     * intercept the user paste before the site/browser fallback, update the
+     * active selection directly, then dispatch one input event so ChatGPT can
+     * synchronize its editor state. Small pastes stay on the site's normal path.
+     */
+    public static final String LARGE_PASTE_ACCELERATOR_JS =
+            "(function(){try{" +
+            "if(window.__mychatgptLargePaste)return;window.__mychatgptLargePaste=true;" +
+            "if(window.top!==window)return;" +
+            "var LARGE_PASTE_MIN=2048;" +
+            "var handling=false;" +
+            "function composer(el){try{" +
+            "if(!el)return null;" +
+            "if(el.id==='prompt-textarea')return el;" +
+            "if(el.closest){var c=el.closest('#prompt-textarea');if(c)return c;}" +
+            "if(el.matches&&el.matches('div[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]'))return el;" +
+            "if(el.closest){var r=el.closest('div[contenteditable=\\\"true\\\"][role=\\\"textbox\\\"]');if(r)return r;}" +
+            "if(el.tagName==='TEXTAREA'||el.tagName==='INPUT')return el;" +
+            "return null;}catch(e){return null;}}" +
+            "function directInsert(el,text,ev){try{" +
+            "if(!el||!text||text.length<LARGE_PASTE_MIN||handling)return false;" +
+            "handling=true;" +
+            "try{ev.preventDefault();}catch(_){}" +
+            "try{ev.stopImmediatePropagation();}catch(_){}" +
+            "try{ev.stopPropagation();}catch(_){}" +
+            "try{el.focus({preventScroll:true});}catch(_){try{el.focus();}catch(__){}}" +
+            "if(el.tagName==='TEXTAREA'||el.tagName==='INPUT'){" +
+            "var a=(typeof el.selectionStart==='number')?el.selectionStart:(el.value||'').length;" +
+            "var b=(typeof el.selectionEnd==='number')?el.selectionEnd:a;" +
+            "var old=String(el.value||'');var next=old.slice(0,a)+text+old.slice(b);" +
+            "var proto=Object.getPrototypeOf(el);" +
+            "var desc=proto&&Object.getOwnPropertyDescriptor(proto,'value');" +
+            "if(desc&&desc.set)desc.set.call(el,next);else el.value=next;" +
+            "try{el.setSelectionRange(a+text.length,a+text.length);}catch(_){}" +
+            "}else{" +
+            "var s=window.getSelection();" +
+            "if(!s||!s.rangeCount||!el.contains(s.anchorNode)){" +
+            "var er=document.createRange();er.selectNodeContents(el);er.collapse(false);" +
+            "s=window.getSelection();s.removeAllRanges();s.addRange(er);" +
+            "}" +
+            "var rr=(s&&s.rangeCount)?s.getRangeAt(0):null;" +
+            "if(!rr)return false;" +
+            "rr.deleteContents();" +
+            "var node=document.createTextNode(text);rr.insertNode(node);" +
+            "rr.setStartAfter(node);rr.collapse(true);s.removeAllRanges();s.addRange(rr);" +
+            "}" +
+            "el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));" +
+            "return true;" +
+            "}catch(e){return false;}finally{handling=false;}}" +
+            "document.addEventListener('paste',function(e){try{" +
+            "var el=composer(e.target);if(!el)return;" +
+            "var text='';" +
+            "try{if(e.clipboardData)text=e.clipboardData.getData('text/plain')||'';}catch(_){}" +
+            "if(text.length>=LARGE_PASTE_MIN)directInsert(el,text,e);" +
+            "}catch(_){}},true);" +
+            "document.addEventListener('beforeinput',function(e){try{" +
+            "var el=composer(e.target);if(!el||handling)return;" +
+            "var type=String(e.inputType||'');var text='';" +
+            "try{if(e.dataTransfer)text=e.dataTransfer.getData('text/plain')||'';}catch(_){}" +
+            "if(!text&&typeof e.data==='string')text=e.data;" +
+            "if(text.length<LARGE_PASTE_MIN)return;" +
+            "if(type==='insertFromPaste'||type==='insertText')directInsert(el,text,e);" +
+            "}catch(_){}},true);" +
             "}catch(e){}})();";
 
     // Java-side polling / attachment timings inherited from WebGPT's
