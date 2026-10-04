@@ -457,8 +457,10 @@ public final class ChatGptSiteContract {
             "    if (hst.indexOf('chatgpt.com') < 0 && hst.indexOf('openai.com') < 0) return;" +
             "    if (window._webgptReadyWatch) return;" +
             "    window._webgptReadyWatch = true;" +
+            "    try { var rb=window.AndroidBridge; if(rb&&rb.debugLog) rb.debugLog('ready watcher installed host='+hst); } catch(e) {}" +
             "    var sent = false, started = Date.now();" +
-            "    function fire(){" +
+            "    function fire(reason){" +
+            "      try { var rb2=window.AndroidBridge; if(rb2&&rb2.debugLog) rb2.debugLog('ready watcher fire reason='+String(reason||'unknown')); } catch(e) {}" +
             "      if (sent) return;" +
             "      sent = true;" +
             "      /* The load tracker only exists to decide when the initial SPA is ready. */" +
@@ -485,16 +487,16 @@ public final class ChatGptSiteContract {
             "    function tick(){" +
             "      if (sent) return true;" +
             "      var now = Date.now();" +
-            "      if (now - started > 8000) { fire(); return true; }" +
+            "      if (now - started > 8000) { fire('hard_cap'); return true; }" +
             "      try {" +
             "        var box = document.getElementById('prompt-textarea')" +
             "               || document.querySelector('div[contenteditable=\"true\"][role=\"textbox\"]');" +
             "        if (box) {" +
-            "          if (vis(document.querySelector('[data-splash-headline-option]'))) { fire(); return true; }" +
-            "          if (vis(document.querySelector('[data-testid=\"use-case-prompt-chips\"] button'))) { fire(); return true; }" +
-            "          if (document.querySelector('[data-testid^=\"conversation-turn\"]')) { fire(); return true; }" +
+            "          if (vis(document.querySelector('[data-splash-headline-option]'))) { fire('splash'); return true; }" +
+            "          if (vis(document.querySelector('[data-testid=\"use-case-prompt-chips\"] button'))) { fire('prompt_chips'); return true; }" +
+            "          if (document.querySelector('[data-testid^=\"conversation-turn\"]')) { fire('conversation_turn'); return true; }" +
             "          var L = window.__webgptLoad;" +
-            "          if (L && (now - L.lastMut > 2000) && (now - L.lastStart > 1500)) { fire(); return true; }" +
+            "          if (L && (now - L.lastMut > 2000) && (now - L.lastStart > 1500)) { fire('settled'); return true; }" +
             "        }" +
             "      } catch(e) {}" +
             "      return false;" +
