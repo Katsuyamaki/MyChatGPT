@@ -462,8 +462,8 @@ public final class ChatGptSiteContract {
             "      if (sent) return;" +
             "      sent = true;" +
             "      /* The load tracker only exists to decide when the initial SPA is ready. */" +
-            "      /* Leaving a subtree+attributes+characterData observer alive makes every */" +
-            "      large composer edit pay observer bookkeeping for the lifetime of the chat. */" +
+            "      /* Leaving a subtree+attributes+characterData observer alive makes every" +
+            "         large composer edit pay observer bookkeeping for the lifetime of the chat. */" +
             "      try { var L=window.__webgptLoad; if(L&&L.mo){L.mo.disconnect();L.mo=null;} } catch(e) {}" +
             "      try {" +
             "        if (window.AndroidBridge && window.AndroidBridge.pageReady)" +
