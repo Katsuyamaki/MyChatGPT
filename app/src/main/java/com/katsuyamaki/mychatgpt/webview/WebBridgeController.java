@@ -66,8 +66,15 @@ public final class WebBridgeController {
 
     @JavascriptInterface
     public void pageReady() {
-        if (!hostAllowed()) return;
-        activity.runOnUiThread(host::onPageReady);
+        debugLog("pageReady invoked thread=" + Thread.currentThread().getName());
+        activity.runOnUiThread(() -> {
+            if (!hostAllowed()) {
+                debugLog("pageReady blocked on UI thread");
+                return;
+            }
+            debugLog("pageReady accepted on UI thread");
+            host.onPageReady();
+        });
     }
 
     /**
