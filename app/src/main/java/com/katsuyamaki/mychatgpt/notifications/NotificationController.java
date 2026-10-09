@@ -37,6 +37,10 @@ public final class NotificationController {
     private final NotificationStore store;
     private final SharedPreferences prefs;
     private final Map<String, Long> recentKeys = new LinkedHashMap<>();
+    private boolean siteMonitorActive;
+    private int siteCapturesThisSession;
+    private int siteProbeCapturesThisSession;
+    private long latestSiteCaptureAt;
 
     public NotificationController(Context context) {
         this.context = context.getApplicationContext();
@@ -70,6 +74,31 @@ public final class NotificationController {
         return true;
     }
 
+    /** Observer confirms that it was installed in the active ChatGPT page. */
+    public void siteMonitorReady() {
+        siteMonitorActive = true;
+    }
+
+    public void resetSiteMonitor() {
+        siteMonitorActive = false;
+    }
+
+    public boolean isSiteMonitorActive() {
+        return siteMonitorActive;
+    }
+
+    public int siteCapturesThisSession() {
+        return siteCapturesThisSession;
+    }
+
+    public int siteProbeCapturesThisSession() {
+        return siteProbeCapturesThisSession;
+    }
+
+    public long latestSiteCaptureAt() {
+        return latestSiteCaptureAt;
+    }
+
     public long recordSiteNotification(String text, String candidateUrl) {
         String body = clean(text);
         if (body.isEmpty()) return 0;
@@ -84,7 +113,15 @@ public final class NotificationController {
                 recentKeys.remove(recentKeys.keySet().iterator().next());
             }
         }
-        return record("ChatGPT update", body, chatUrl, "site");
+        boolean probe = body.startsWith("MyChatGPT site capture test:");
+        long id = record(probe ? "MyChatGPT capture test" : "ChatGPT update",
+                body, chatUrl, probe ? "site-test" : "site");
+        if (id > 0) {
+            if (probe) siteProbeCapturesThisSession++;
+            else siteCapturesThisSession++;
+            latestSiteCaptureAt = System.currentTimeMillis();
+        }
+        return id;
     }
 
     public long recordTestNotification(String chatUrl) {

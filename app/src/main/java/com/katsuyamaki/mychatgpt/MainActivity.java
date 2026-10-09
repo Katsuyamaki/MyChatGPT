@@ -341,6 +341,11 @@ public class MainActivity extends Activity {
                     public void sendTestNotification() {
                         MainActivity.this.sendTestNotification();
                     }
+
+                    @Override
+                    public void testSiteCapture() {
+                        MainActivity.this.testSiteCapture();
+                    }
                 });
         loadingStateController.initializePresentation();
 
@@ -475,6 +480,23 @@ public class MainActivity extends Activity {
         if (nativeShellController != null) nativeShellController.refreshNotifications();
     }
 
+    /** Exercises web DOM observation, JS bridge, local history and Android posting. */
+    private void testSiteCapture() {
+        if (webview == null
+                || !ChatGptSiteContract.isChatGptWebUrl(webview.getUrl())) {
+            Toast.makeText(this, "Open a ChatGPT page to test popup capture",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        webview.evaluateJavascript(SiteNotificationMonitor.PROBE_SCRIPT, value -> {
+            if (!"true".equals(value)) {
+                Toast.makeText(MainActivity.this,
+                        "Site listener unavailable. Reload ChatGPT and retry.",
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
     @Override
     protected void onStop() {
         super.onStop();
@@ -499,6 +521,16 @@ public class MainActivity extends Activity {
                         if (loadingStateController != null
                                 && loadingStateController.onDomReady()) {
                             transferController.kickPendingSharePipelines();
+                        }
+                    }
+
+                    @Override
+                    public void onSiteMonitorReady() {
+                        if (notificationController != null) {
+                            notificationController.siteMonitorReady();
+                        }
+                        if (nativeShellController != null) {
+                            nativeShellController.refreshNotifications();
                         }
                     }
 
@@ -569,7 +601,7 @@ public class MainActivity extends Activity {
                 // Do not compare to the field: during renderer recovery the new
                 // WebView is configured before webview is reassigned.
                 WebViewCompat.addDocumentStartJavaScript(
-                        webView, SiteNotificationMonitor.SCRIPT,
+                        webView, SiteNotificationMonitor.script(this),
                         java.util.Collections.singleton("*"));
             }
         } catch (Throwable t) {
@@ -698,6 +730,12 @@ public class MainActivity extends Activity {
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
                 super.onPageStarted(v, url, favicon);
                 loadingStateController.onPageStarted(v);
+                if (v == webview && notificationController != null) {
+                    notificationController.resetSiteMonitor();
+                    if (nativeShellController != null) {
+                        nativeShellController.refreshNotifications();
+                    }
+                }
             }
 
             @Override
@@ -729,7 +767,7 @@ public class MainActivity extends Activity {
         // must never run in OAuth/share popups.
         if (v == webview) {
             v.evaluateJavascript(ChatGptSiteContract.PAGE_READY_WATCHER_JS, null);
-            v.evaluateJavascript(SiteNotificationMonitor.SCRIPT, null);
+            v.evaluateJavascript(SiteNotificationMonitor.script(this), null);
         }
     }
 

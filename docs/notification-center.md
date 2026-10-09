@@ -40,6 +40,43 @@ uninstalls or app-data wipes. Android 13+ requires user consent via
 `POST_NOTIFICATIONS`; the Notifications page requests it on demand.
 A blocked notification channel can be reopened from Android settings.
 
+## Foreground capture v2
+
+The previous popup watcher only matched a small set of toast elements and waited
+170 ms before checking them. Some transient website notices appeared/disappeared
+or changed visibility/text before the watcher could capture them.
+
+The updated main-document watcher now observes text insertions and relevant
+state/ARIA attribute changes, captures with an initial 30 ms delay, retries
+temporarily hidden/empty candidates, and recognizes Sonner, Radix, Toastify,
+ARIA status/alert regions and notification-like popup cards. It excludes
+conversation turns, composer fields, dialogs and navigation areas to avoid
+logging normal chat content. The original Android posting/SQLite storage and
+chat-routing code remains intact.
+
+The in-app Notifications page shows **Site popup listener: ACTIVE** after the
+injected watcher reports successful installation, and a count of real website
+popups captured during the current app session. It also has two separate tests:
+
+- **SEND TEST** validates Android notification posting and SQLite history, but
+  bypasses the website.
+- **TEST SITE POPUP CAPTURE** creates a temporary toast in the ChatGPT WebView
+  and exercises the full page MutationObserver -> JavaScript bridge -> SQLite
+  -> Android notification path. The matching history item is clearly labeled
+  `MyChatGPT capture test`, not a real site notification.
+
+To verify on the Flip 7: open a ChatGPT conversation, expand Notifications,
+confirm the watcher is ACTIVE, run TEST SITE POPUP CAPTURE, then trigger a
+genuine popup (not the test). Confirm it is reflected once in both Android
+notifications and MyChatGPT history with a timestamp. Dismissing the Android
+notification must not clear the saved record. Re-test after WebView reload or
+renderer recreation; the same observer is registered at document start.
+
+The observer still cannot capture notices emitted outside the ChatGPT web-page
+DOM (for example, native Android toasts from download operations or cloud push
+while the WebView is terminated). It is a frontend integration and the popup
+markup may change with future ChatGPT releases.
+
 ## On-device acceptance checks (Flip 7)
 
 - Icon (not `TUNE`) opens menu; back and close work; page fits folded cover

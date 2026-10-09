@@ -78,6 +78,7 @@ public final class NativeShellController {
         void openNotification(long id);
         void requestNotificationPermission();
         void sendTestNotification();
+        void testSiteCapture();
     }
 
     private final Activity activity;
@@ -460,6 +461,16 @@ public final class NativeShellController {
         state.setPadding(dp(4), 0, dp(4), dp(9));
         pageContent.addView(state);
 
+        String watcher = notifications.isSiteMonitorActive()
+                ? "Site popup listener: ACTIVE"
+                : "Site popup listener: waiting for ChatGPT";
+        TextView monitor = makeLabel(watcher
+                + "  ·  Real captures: " + notifications.siteCapturesThisSession(), 11f);
+        monitor.setTextColor(notifications.isSiteMonitorActive()
+                ? 0xFFAFE8D0 : Color.LTGRAY);
+        monitor.setPadding(dp(4), 0, dp(4), dp(9));
+        pageContent.addView(monitor);
+
         TextView toggle = makeButton(
                 !notifications.isAndroidEnabled() ? "ENABLE ANDROID ALERTS"
                 : notifications.needsPermission() ? "GRANT NOTIFICATION ACCESS"
@@ -490,6 +501,13 @@ public final class NativeShellController {
         pageContent.addView(actions, actionParams);
         test.setOnClickListener(v -> host.sendTestNotification());
         system.setOnClickListener(v -> openAndroidNotificationSettings());
+
+        TextView webProbe = makeButton("TEST SITE POPUP CAPTURE");
+        LinearLayout.LayoutParams probeParams = fullWidthButton(38);
+        probeParams.topMargin = dp(6);
+        probeParams.bottomMargin = dp(4);
+        pageContent.addView(webProbe, probeParams);
+        webProbe.setOnClickListener(v -> host.testSiteCapture());
 
         LinearLayout toolbar = new LinearLayout(activity);
         toolbar.setOrientation(LinearLayout.HORIZONTAL);

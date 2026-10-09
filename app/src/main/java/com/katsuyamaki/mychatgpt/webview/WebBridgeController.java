@@ -24,6 +24,7 @@ public final class WebBridgeController {
         WebView getMainWebView();
         void onPageReady();
         void onSiteNotification(String text, String candidateUrl);
+        void onSiteMonitorReady();
     }
 
     private final Activity activity;
@@ -83,6 +84,15 @@ public final class WebBridgeController {
      * Site toast bridge. Only the primary ChatGPT document may emit inbox items;
      * popup/iframe copies of AndroidBridge are never accepted.
      */
+    @JavascriptInterface
+    public void siteMonitorReady() {
+        activity.runOnUiThread(() -> {
+            if (hostWebView != host.getMainWebView()) return;
+            if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
+            host.onSiteMonitorReady();
+        });
+    }
+
     @JavascriptInterface
     public void siteNotification(final String text, final String candidateUrl) {
         activity.runOnUiThread(() -> {

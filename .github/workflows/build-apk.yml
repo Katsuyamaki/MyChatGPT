@@ -61,6 +61,10 @@ jobs:
           printf '%s' "$MYCHATGPT_DEV_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/mychatgpt-dev.jks"
           chmod 600 "$RUNNER_TEMP/mychatgpt-dev.jks"
 
+      - name: Verify foreground popup monitor JavaScript
+        shell: bash
+        run: node --check app/src/main/assets/site_notification_monitor.js
+
       - name: Build debug APK
         shell: bash
         env:
