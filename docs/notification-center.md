@@ -72,10 +72,15 @@ notifications and MyChatGPT history with a timestamp. Dismissing the Android
 notification must not clear the saved record. Re-test after WebView reload or
 renderer recreation; the same observer is registered at document start.
 
-The observer still cannot capture notices emitted outside the ChatGPT web-page
-DOM (for example, native Android toasts from download operations or cloud push
-while the WebView is terminated). It is a frontend integration and the popup
-markup may change with future ChatGPT releases.
+In addition to the page observer, all existing MyChatGPT-owned Android
+`Toast.makeText` call sites now use `AppToast`: the original transient toast
+is still displayed, and a separate **MyChatGPT popup** item is stored locally
+and posted through Android when enabled. This covers existing download, share,
+reload, settings and failure popups without requiring a DOM observer.
+
+Neither path intercepts external apps' toasts, OEM-generated system UI notices,
+or cloud push while the WebView is terminated. Website toast markup may change
+with future ChatGPT releases.
 
 ## On-device acceptance checks (Flip 7)
 
@@ -91,5 +96,6 @@ markup may change with future ChatGPT releases.
   single saved event and system notification, not duplicates from DOM changes.
 - Disable Android alerts; ensure history still grows with no Android post.
 - Deny notification permission; ensure history and navigation still work.
+- Trigger an existing native MyChatGPT Toast (such as a download/share status); verify the original popup remains visible AND a timestamped **MyChatGPT popup** appears in history and Android.
 - Kill/relaunch the app; verify log remains. Use Older/Newer paging.
 - CLEAR requires confirmation; it clears history and posted app notifications.

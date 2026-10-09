@@ -124,6 +124,26 @@ public final class NotificationController {
         return id;
     }
 
+    /** Existing native Android Toasts also become durable, timestamped entries. */
+    public long recordAppToast(String text, String currentUrl) {
+        String body = clean(text);
+        if (body.isEmpty()) return 0;
+        String chatUrl = safeChatUrl(currentUrl);
+        long now = SystemClock.elapsedRealtime();
+        String key = "native|" + body + "|" + chatUrl;
+        synchronized (recentKeys) {
+            Long previous = recentKeys.get(key);
+            if (previous != null && now >= previous && now - previous < 10000) {
+                return 0;
+            }
+            recentKeys.put(key, now);
+            if (recentKeys.size() > 40) {
+                recentKeys.remove(recentKeys.keySet().iterator().next());
+            }
+        }
+        return record("MyChatGPT popup", body, chatUrl, "app-toast");
+    }
+
     public long recordTestNotification(String chatUrl) {
         return record("MyChatGPT test", "Android notification and history are working.",
                 safeChatUrl(chatUrl), "test");

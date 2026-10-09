@@ -427,7 +427,7 @@ public final class NativeShellController {
         move.setOnClickListener(v -> cycleCorner());
         reload.setOnClickListener(v -> {
             panel.setVisibility(View.GONE);
-            Toast.makeText(activity, "Refreshing current chat…", Toast.LENGTH_SHORT).show();
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Refreshing current chat…", Toast.LENGTH_SHORT).show();
             host.forceReloadCurrentChat();
         });
         reset.setOnClickListener(v -> {
@@ -604,7 +604,7 @@ public final class NativeShellController {
             }
             activity.startActivity(intent);
         } catch (Exception e) {
-            Toast.makeText(activity, "Cannot open Android settings",
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Cannot open Android settings",
                     Toast.LENGTH_SHORT).show();
         }
     }

@@ -55,7 +55,7 @@ public class App extends Application {
             Hooker.hookPackageManager(getApplicationContext());
         } catch (Throwable t) {
             Log.e(TAG, "hookPackageManager failed", t);
-            Toast.makeText(this, "WebView hook failed: " + t.getMessage(), Toast.LENGTH_LONG).show();
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(this, "WebView hook failed: " + t.getMessage(), Toast.LENGTH_LONG).show();
         }
 
         // 3. Optionally install the DeveloperModeContentProvider hook.

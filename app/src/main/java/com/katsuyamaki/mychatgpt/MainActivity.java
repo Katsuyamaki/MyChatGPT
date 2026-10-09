@@ -66,6 +66,7 @@ import com.katsuyamaki.mychatgpt.webview.WelcomeDialog;
 import com.katsuyamaki.mychatgpt.site.ChatGptSiteContract;
 import com.katsuyamaki.mychatgpt.shell.NativeShellController;
 import com.katsuyamaki.mychatgpt.notifications.NotificationController;
+import com.katsuyamaki.mychatgpt.notifications.AppToast;
 import com.katsuyamaki.mychatgpt.notifications.NotificationStore;
 import com.katsuyamaki.mychatgpt.notifications.SiteNotificationMonitor;
 import com.google.android.material.progressindicator.LinearProgressIndicator;
@@ -229,7 +230,7 @@ public class MainActivity extends Activity {
 
             if (CrashTracker.hasCrashes()) {
                 Log.w(TAG, "Crash threshold reached; bouncing to WebView Manager");
-                Toast.makeText(this, R.string.webview_pick_another, Toast.LENGTH_LONG).show();
+                AppToast.makeText(this, R.string.webview_pick_another, Toast.LENGTH_LONG).show();
                 CrashTracker.reset();
                 Intent i = new Intent(this, SettingsActivity.class);
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -245,6 +246,7 @@ public class MainActivity extends Activity {
         webview = findViewById(R.id.activity_main_webview);
         rootLayout = (ViewGroup) webview.getParent();
         notificationController = new NotificationController(this);
+        AppToast.attach(notificationController, webview);
         mainWebViewController = new MainWebViewController(
                 this,
                 rootLayout,
@@ -449,7 +451,7 @@ public class MainActivity extends Activity {
             nativeShellController.closePanelIfOpen();
             mainWebViewController.loadUrl(webview, chatUrl);
         } else {
-            Toast.makeText(this, "This notice has no linked conversation",
+            AppToast.makeText(this, "This notice has no linked conversation",
                     Toast.LENGTH_SHORT).show();
         }
     }
@@ -484,13 +486,13 @@ public class MainActivity extends Activity {
     private void testSiteCapture() {
         if (webview == null
                 || !ChatGptSiteContract.isChatGptWebUrl(webview.getUrl())) {
-            Toast.makeText(this, "Open a ChatGPT page to test popup capture",
+            AppToast.makeText(this, "Open a ChatGPT page to test popup capture",
                     Toast.LENGTH_LONG).show();
             return;
         }
         webview.evaluateJavascript(SiteNotificationMonitor.PROBE_SCRIPT, value -> {
             if (!"true".equals(value)) {
-                Toast.makeText(MainActivity.this,
+                AppToast.makeText(MainActivity.this,
                         "Site listener unavailable. Reload ChatGPT and retry.",
                         Toast.LENGTH_LONG).show();
             }
@@ -719,6 +721,7 @@ public class MainActivity extends Activity {
                     // since the official v6.24 release).
                     webview = mainWebViewController.recreateMainWebView(
                             webview, MainActivity.this::setupMainWebView);
+                    AppToast.updateWebView(webview);
                     mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
                 } else {
                     if (popupAuthController != null) popupAuthController.removePopup(view);
@@ -808,14 +811,14 @@ public class MainActivity extends Activity {
         if (shareBtn != null) {
             shareBtn.setOnClickListener(v -> {
                 dialog.dismiss();
-                Toast.makeText(this, "Loading image to share...", Toast.LENGTH_SHORT).show();
+                AppToast.makeText(this, "Loading image to share...", Toast.LENGTH_SHORT).show();
                 transferController.downloadAndShareImageFile(imageUrl);
             });
         }
         if (downloadBtn != null) {
             downloadBtn.setOnClickListener(v -> {
                 dialog.dismiss();
-                Toast.makeText(this, "Downloading image...", Toast.LENGTH_SHORT).show();
+                AppToast.makeText(this, "Downloading image...", Toast.LENGTH_SHORT).show();
                 transferController.downloadImageToDownloads(imageUrl);
             });
         }
@@ -1072,6 +1075,7 @@ public class MainActivity extends Activity {
             nativeShellController.destroy();
         }
         if (notificationController != null) {
+            AppToast.detach(notificationController);
             notificationController.close();
         }
         if (loadingStateController != null) {

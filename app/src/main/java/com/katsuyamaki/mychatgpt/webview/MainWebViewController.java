@@ -307,7 +307,7 @@ public final class MainWebViewController {
             activity.startActivity(intent);
         } catch (Exception e) {
             Log.e(TAG, "openUrlInBrowser failed", e);
-            Toast.makeText(activity, "Cannot open URL", Toast.LENGTH_SHORT).show();
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Cannot open URL", Toast.LENGTH_SHORT).show();
         }
     }
 }
