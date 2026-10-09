@@ -98,6 +98,8 @@ public final class NativeShellController {
     private LinearLayout pageContent;
     private int currentPage = PAGE_HOME;
     private int notificationOffset;
+    // Hidden by default: historical copy/sidebar/download alerts and explicit tests.
+    private boolean showOtherHistory;
     private TextView backdropLabel;
     private TextView surfaceOpacityLabel;
     private TextView uiScaleLabel;
@@ -192,6 +194,7 @@ public final class NativeShellController {
     public void showNotificationsPage() {
         if (panel == null) return;
         notificationOffset = 0;
+        showOtherHistory = false;
         showPage(PAGE_NOTIFICATIONS);
         panel.setVisibility(View.VISIBLE);
     }
@@ -351,6 +354,7 @@ public final class NativeShellController {
         pageContent.addView(inbox, inboxParams);
         inbox.setOnClickListener(v -> {
             notificationOffset = 0;
+            showOtherHistory = false;
             showPage(PAGE_NOTIFICATIONS);
         });
     }
@@ -457,7 +461,7 @@ public final class NativeShellController {
                 : notifications.needsPermission()
                     ? "Android permission needed · history still saved"
                     : notifications.canPostAndroid()
-                        ? "Android alerts on · history always saved"
+                        ? "Android alerts on · replies and scheduled tasks only"
                         : "Android alerts blocked in system settings";
         TextView state = makeLabel(status, 11f);
         state.setPadding(dp(4), 0, dp(4), dp(9));
@@ -473,7 +477,7 @@ public final class NativeShellController {
                 ? "Site popup listener: ACTIVE"
                 : "Site popup listener: waiting for ChatGPT";
         TextView monitor = makeLabel(watcher
-                + "  ·  Real popups: " + notifications.siteCapturesThisSession()
+                + "  ·  Task alerts: " + notifications.siteCapturesThisSession()
                 + "  ·  Completed replies: " + notifications.completionsRecordedThisSession(), 11f);
         monitor.setTextColor(notifications.isSiteMonitorActive()
                 ? 0xFFAFE8D0 : Color.LTGRAY);
@@ -534,6 +538,12 @@ public final class NativeShellController {
         pageContent.addView(diagnostics, diagParams);
         diagnostics.setOnClickListener(v -> host.copyMonitorDiagnostics());
 
+        TextView testTip = makeLabel(
+                "Diagnostic test alerts are hidden from the main inbox. "
+                + "Use Show Other History / Tests to inspect them.", 10f);
+        testTip.setPadding(dp(4), dp(5), dp(4), dp(5));
+        pageContent.addView(testTip);
+
         TextView companionHeading = makeLabel("OPTIONAL OFFICIAL-APP MIRROR", 11f);
         companionHeading.setTypeface(null, android.graphics.Typeface.BOLD);
         companionHeading.setPadding(dp(4), dp(12), dp(4), dp(4));
@@ -585,7 +595,9 @@ public final class NativeShellController {
         LinearLayout toolbar = new LinearLayout(activity);
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        TextView history = makeLabel("History (" + notifications.totalCount() + ")", 13f);
+        TextView history = makeLabel(
+                (showOtherHistory ? "All history (" : "Replies & tasks (")
+                + notifications.totalCount(showOtherHistory) + ")", 13f);
         history.setTypeface(null, android.graphics.Typeface.BOLD);
         toolbar.addView(history, new LinearLayout.LayoutParams(0, dp(40), 1f));
         TextView clear = makeButton("CLEAR");
@@ -593,7 +605,7 @@ public final class NativeShellController {
         pageContent.addView(toolbar, fullWidthWrap());
         clear.setOnClickListener(v -> new android.app.AlertDialog.Builder(activity)
                 .setTitle("Clear notification history?")
-                .setMessage("This removes saved notices and posted Android notices. It cannot be undone.")
+                .setMessage("This deletes all saved notifications, including hidden older alerts and tests. It cannot be undone.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Clear", (dialog, which) -> {
                     notifications.clearHistory();
@@ -601,10 +613,23 @@ public final class NativeShellController {
                     refreshNotifications();
                 }).show());
 
-        int total = notifications.totalCount();
+        TextView otherHistory = makeButton(
+                showOtherHistory ? "SHOW ONLY REPLIES & TASKS" : "SHOW OTHER HISTORY / TESTS");
+        LinearLayout.LayoutParams otherParams = fullWidthButton(34);
+        otherParams.bottomMargin = dp(7);
+        pageContent.addView(otherHistory, otherParams);
+        otherHistory.setOnClickListener(v -> {
+            showOtherHistory = !showOtherHistory;
+            notificationOffset = 0;
+            refreshNotifications();
+        });
+
+        int total = notifications.totalCount(showOtherHistory);
         if (total == 0) {
             TextView empty = makeLabel(
-                    "No notifications saved yet. Real ChatGPT alerts, website popups and MyChatGPT status messages appear here.",
+                    showOtherHistory
+                        ? "No saved notifications yet."
+                        : "No completed replies or scheduled tasks yet. Older routine and test alerts are hidden.",
                     12f);
             empty.setPadding(dp(4), dp(8), dp(4), dp(10));
             pageContent.addView(empty);
@@ -612,7 +637,7 @@ public final class NativeShellController {
         }
         if (notificationOffset >= total) notificationOffset = Math.max(0, total - PAGE_SIZE);
         List<NotificationStore.Entry> entries =
-                notifications.recent(PAGE_SIZE, notificationOffset);
+                notifications.recent(PAGE_SIZE, notificationOffset, showOtherHistory);
         for (NotificationStore.Entry item : entries) {
             LinearLayout row = new LinearLayout(activity);
             row.setOrientation(LinearLayout.VERTICAL);
@@ -634,7 +659,7 @@ public final class NativeShellController {
             row.addView(body);
             TextView link = makeLabel(
                     item.chatUrl != null ? "Tap to open conversation"
-                    : "official-chatgpt".equals(item.source)
+                    : ("official-task".equals(item.source) || "official-chatgpt".equals(item.source))
                         ? "Android did not provide a chat link"
                         : "No chat link provided", 10f);
             link.setTextColor(0xFFA8D4FF);

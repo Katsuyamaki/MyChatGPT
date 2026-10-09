@@ -65,6 +65,17 @@ jobs:
         shell: bash
         run: node --check app/src/main/assets/site_notification_monitor.js
 
+      - name: Verify only completed replies and scheduled tasks are allowed
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/notification-policy"
+          javac -d "$RUNNER_TEMP/notification-policy" \
+            app/src/main/java/com/katsuyamaki/mychatgpt/notifications/NotificationFilter.java \
+            app/src/test/java/com/katsuyamaki/mychatgpt/notifications/NotificationFilterSmokeTest.java
+          java -cp "$RUNNER_TEMP/notification-policy" \
+            com.katsuyamaki.mychatgpt.notifications.NotificationFilterSmokeTest
+
       - name: Build debug APK
         shell: bash
         env:

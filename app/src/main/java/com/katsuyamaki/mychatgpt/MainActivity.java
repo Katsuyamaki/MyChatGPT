@@ -253,7 +253,6 @@ public class MainActivity extends Activity {
         webview = findViewById(R.id.activity_main_webview);
         rootLayout = (ViewGroup) webview.getParent();
         notificationController = new NotificationController(this);
-        AppToast.attach(notificationController, webview);
         mainWebViewController = new MainWebViewController(
                 this,
                 rootLayout,
@@ -605,10 +604,11 @@ public class MainActivity extends Activity {
                     }
 
                     @Override
-                    public void onChatResponseCompleted(String url, String turnKey) {
+                    public void onChatResponseCompleted(String url, String turnKey,
+                                                        String chatTitle, String projectName) {
                         if (notificationController != null) {
                             long id = notificationController.recordResponseCompletion(
-                                    url, turnKey);
+                                    url, turnKey, chatTitle, projectName);
                             if (id > 0 && nativeShellController != null) {
                                 nativeShellController.refreshNotifications();
                             }
@@ -616,10 +616,11 @@ public class MainActivity extends Activity {
                     }
 
                     @Override
-                    public void onSiteNotification(String text, String candidateUrl) {
+                    public void onSiteNotification(String text, String candidateUrl,
+                                                   String chatTitle, String projectName) {
                         if (notificationController != null) {
                             long id = notificationController.recordSiteNotification(
-                                    text, candidateUrl);
+                                    text, candidateUrl, chatTitle, projectName);
                             if (id > 0 && nativeShellController != null) {
                                 nativeShellController.refreshNotifications();
                             }
@@ -800,7 +801,6 @@ public class MainActivity extends Activity {
                     // since the official v6.24 release).
                     webview = mainWebViewController.recreateMainWebView(
                             webview, MainActivity.this::setupMainWebView);
-                    AppToast.updateWebView(webview);
                     mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
                 } else {
                     if (popupAuthController != null) popupAuthController.removePopup(view);
@@ -1158,7 +1158,6 @@ public class MainActivity extends Activity {
         }
         NotificationController.observeHistory(null);
         if (notificationController != null) {
-            AppToast.detach(notificationController);
             notificationController.close();
         }
         if (loadingStateController != null) {

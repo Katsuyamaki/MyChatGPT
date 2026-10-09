@@ -1,247 +1,117 @@
-# Native notification center
+# Native notification center (focused feed)
 
-MyChatGPT stores notifications from three clearly separated sources:
+MyChatGPT's **normal Android notifications and in-app inbox now contain only:**
 
-- **ChatGPT Android push relay (optional):** the official ChatGPT Android
-  app's actual OS notifications, delivered by Android's
-  `NotificationListenerService`, even with MyChatGPT backgrounded.
-- **ChatGPT site popups:** transient toast/alert markup while MyChatGPT's
-  ChatGPT WebView is running. This is not a cloud push feed.
-- **MyChatGPT native popups:** MyChatGPT's own `Toast` status messages
-  (download/share, settings and errors).
+1. **Chat responses completed** in the live ChatGPT WebView.
+2. **Scheduled-task occurrences**, such as a task finishing or a reminder becoming due.
 
-When an event is received, MyChatGPT delivers it to two destinations:
+Opening the sidebar, copying/pasting, downloading, changing settings, and other
+routine popups still show their original transient status if the app displays
+one, but **do not create persistent history rows or Android notifications**.
+A site toast or Android notification is no longer automatically considered
+a user-important event merely because it exists.
 
-1. Android notification channel `ChatGPT updates`, if enabled and permitted.
-2. Private SQLite database `mychatgpt_notifications.db`, independent of Android dismissals.
+## Event sources
 
-The floating native control is the MyChatGPT launcher icon. Open it and select
-**Tune** (existing wallpaper/transparency, UI scale, text zoom, corner and reload)
-or **Notifications** (status, enable/disable, permission shortcut, test, dated
-history, clear, and newer/older pages). A red count on the icon shows unread items.
-History is not truncated or automatically pruned; clearing is a deliberate action.
+- `completion` — a document-start script observes actual generation state,
+  then a stable final assistant turn/action. The JavaScript-to-Java bridge
+  transfers only the validated chat URL, a non-content turn identifier,
+  and the chat/project display labels. It never transfers the response text.
+  Stable per-turn database fingerprints prevent duplicate completions.
+- `scheduled-task` — an actual transient ChatGPT website popup that matches
+  the allowlist for a task/reminder **occurrence**, not generic task menu
+  entries, task creation, configuration, or routine site toasts. It uses a
+  short time-bucket fingerprint to suppress repeated re-renders.
+- `official-task` — an **optional** Android notification listener that
+  only inspects official ChatGPT package notifications and now filters for
+  *scheduled-task occurrences* as well. It is neither required for direct
+  foreground completions nor an independent OpenAI push connection.
 
-## Routing and privacy
+The site detector still observes generic popup markup for diagnostics, but the
+**native recording layer filters events**: only the allowed sources persist
+and enter the Android shade.
 
-- Each notice is assigned a SQLite ID. Android `PendingIntent` carries only that
-  ID; tapping it reads the stored record, marks it read, and navigates the primary
-  WebView to an HTTPS `chatgpt.com` conversation URL if available.
-- In-app history rows use the same method. System dismissal does not mark read
-  or remove the row. A notification without a trustworthy chat link opens the
-  in-app history (from Android) or stays in history (from the overlay).
-- The observer accepts only the main ChatGPT frame; native bridge revalidates
-  the live main-WebView URL. Navigations are restricted to conversation paths
-  containing `/c/<conversation-id>`, never arbitrary third-party URLs.
-- The site sometimes provides an anchor to a different conversation. That link
-  is preferred. Otherwise the current conversation URL is used when present.
-  If no link exists, no chat link is fabricated.
-- Rows may contain text visible in the originating toast. The private database
-  is not backed up by Android (`allowBackup=false`); nothing is sent to a
-  third-party service or written to logcat. Clearing the database is permanent.
+### Chat and project names
 
-## Scope and known limits
+On completion, the script looks for the link pointing to the **exact
+conversation URL** in the ChatGPT sidebar and reads its label as the chat
+title. For a regular conversation, a meaningful document title is a fallback.
+For a project chat, the project name is extracted only from a recognizable
+project link or header/breadcrumb. Titles are cached per conversation as the
+sidebar opens and closes.
 
-The site observer captures visible site toasts and alerts **while the ChatGPT
-WebView is running**, but does not subscribe to ChatGPT's server push service.
-The optional **Android companion-app relay** instead captures the official
-ChatGPT app's delivered OS notifications while foregrounded or backgrounded.
-If the official app or its notifications are disabled, no background push
-source exists in MyChatGPT. Toast selectors are site-dependent and must
-be validated on the actual ChatGPT frontend as it evolves. In-app history
-persists across process deaths and Android notification dismissals, not
-uninstalls or app-data wipes. Android 13+ requires user consent via
-`POST_NOTIFICATIONS`; the Notifications page requests it on demand.
-A blocked notification channel can be reopened from Android settings.
+Example Android notice:
 
-## First-party-free website capture v3 (foreground)
+- **Title:** `Chat Title`
+- **Body:** `Response complete · Project: Project Name`
 
-**This is the preferred mode for the reported failure.** MyChatGPT no
-longer needs the official Android app to notice a response finishing
-**while the ChatGPT WebView is active**.
+If one label is not reliably available, MyChatGPT omits it instead of
+mistakenly calling the project name the chat title. The completion still
+saves and links to the correct conversation. The notification and history
+row have the same timestamp and title/body.
 
-Two independent sources feed the existing `NotificationController`:
+Scheduled-task notifications only have a conversation link when the task
+notice provides a trustworthy explicit chat link; they never assume that
+the currently open conversation is the scheduled task's chat.
 
-1. **Web UI flash observer:** watches live DOM additions, text, ARIA state,
-   and—critically—`class`, `style`, and `hidden` changes that the older
-   listener ignored. It recognizes conventional toasts and compact floating
-   cards even without toast IDs, roles or ARIA labels. It excludes chat
-   transcript turns and compose/input areas. It does not need Notification
-   Access for another Android app.
-2. **Response-finished state observer:** watches the site’s actual generation
-   controls (stop/streaming indicators) and the final assistant reply/action
-   controls. A reply is recorded only after a **previously observed generation**
-   finishes and remains stable. New page loads containing historical completed
-   replies do not create events. Manual Stop and recognized errors are
-   suppressed. No response text is transmitted by this path: only an
-   explicit conversation URL and non-content turn identifier. The native side
-   fingerprints them for persistent deduplication.
+### Notification history
 
-The WebView sends events through the pre-existing JavaScript-to-Java bridge,
-then the native controller stores a timestamped SQLite row and posts the
-Android notification (if permission and channel are enabled). Dismissing the
-Android notification leaves history intact.
+The default inbox and unread icon count show only `completion`,
+`scheduled-task`, and `official-task` rows. Old copy/download/sidebar
+rows and explicitly generated test alerts remain in the private database
+**without appearing in the normal inbox**.
 
-### Testing without official ChatGPT Android notifications
+**SHOW OTHER HISTORY / TESTS** temporarily reveals those older entries
+for diagnosis. **CLEAR** permanently removes all rows, including hidden
+historical entries, and cancels posted MyChatGPT Android notifications.
+The SQLite database is in private app storage, not backed up, and is
+independent of Android shade dismissal. A notification's PendingIntent
+references a local database ID and only validated ChatGPT HTTPS
+conversation routes may be opened.
 
-1. Install the latest feature branch, open a conversation, and verify
-   **Site popup listener: ACTIVE**. Leave companion Notification Access off.
-2. **SEND TEST** validates only history/Android output.
-3. **TEST SITE POPUP CAPTURE** inserts a marked mock toast.
-4. **TEST UNMARKED POPUP** inserts a temporary floating card **without**
-   any toast/ARIA metadata, testing the generic visual-popup recognition.
-5. Ask ChatGPT for a real answer. While it generates, the Notifications page
-   should show a generation count increase. After it finishes, the
-   **completions** count and **ChatGPT response complete** history row should
-   increase. Click the row to return to that conversation.
-6. If a genuine on-screen toast appears, **Popup candidates** and **forwarded**
-   should increase, generating a `ChatGPT update` history row.
-7. If a genuine flash still goes missing, choose **COPY CAPTURE COUNTERS**
-   and share the text (counts only, no conversation content). A zero popup
-   candidate count with an ACTIVE listener tells us the visible surface is not
-   matched or not part of the DOM observed; generations/completions counters
-   separately diagnose the response-state path.
+## On-device checks
 
-**Boundary:** Android WebView is paused by MyChatGPT when backgrounded to
-avoid needless battery use, and Android may kill the process. This direct
-website path does not provide guaranteed offline/background push. On resume
-a still-live generation may become observable again, but events missed
-during process death cannot be reconstructed. The companion Android relay
-is separate, optional, and still requires the official app.
+1. Install the feature branch, open a conversation in MyChatGPT, then open
+   MyChatGPT icon -> Notifications. Android alerts must be enabled.
+2. Ask ChatGPT to generate a response, let it finish, then confirm a
+   **response complete** entry appears with the chat title, and the
+   project name if known. Tap it to reopen the correct conversation.
+3. Copy text, paste text, open/close the sidebar and download a file. The
+   original UI confirmations may still flash, but there should be
+   **no new Android notices, default inbox entries or unread count**.
+4. Trigger an actual scheduled task occurrence (not opening the task
+   manager or creating a schedule). If its alert appears in the live
+   WebView, confirm a `scheduled-task` row. If using the optional official
+   listener, confirm an `official-task` row for task notifications only.
+5. Use **SHOW OTHER HISTORY / TESTS** to access historical debug and
+   synthetic SEND TEST / TEST SITE POPUP CAPTURE / TEST UNMARKED POPUP
+   entries. These remain available for diagnosing missing events.
+6. If a chat title is missing, **COPY CAPTURE COUNTERS** shows only
+   structural counters plus whether the last completion had a chat title
+   and project name. It does not copy private titles or conversation text.
 
-## Real push relay (official ChatGPT app, opt-in)
+The GitHub Actions workflow syntax-checks injected JavaScript, runs a
+stock-JDK smoke test for the scheduled-event filter, assembles the APK,
+verifies signing, and uploads the APK artifact.
 
-**Important:** There is no independently authenticated ChatGPT push feed in
-this WebView wrapper. Local test notifications prove output only. A site
-MutationObserver cannot detect server events when the WebView is not running.
-On a Galaxy Flip 7, the practical background source is the already installed
-official ChatGPT Android app. Android can notify MyChatGPT when that *other*
-app posts a notification, provided the user explicitly grants Notification
-Access.
+## Limits
 
-### Set up
-
-1. **Re-enable official ChatGPT app Android notifications** (the push source).
-   MyChatGPT -> Notifications -> **CHATGPT APP ALERT SETTINGS** opens the
-   official app's OS notification settings. ChatGPT's own account push setting
-   also needs to be enabled for the event type.
-2. MyChatGPT -> Notifications -> **GRANT MIRROR ACCESS**. In Android's
-   Notification Access page, allow the MyChatGPT notification mirror. This is
-   **not** the same permission as allowing MyChatGPT to *post* notifications.
-   Some sideloaded Android versions may require manually allowing restricted
-   settings in MyChatGPT's App info screen first.
-3. MyChatGPT's Notifications page should show
-   **Official ChatGPT push: LISTENING** once Android binds the listener.
-   If it shows Access Needed, the OS permission is missing; if it says
-   Connecting after access is granted, Android has not yet bound the service.
-4. Have ChatGPT produce a **real** notification (a scheduled task completion,
-   for example), not a local SEND TEST or TEST SITE POPUP CAPTURE.
-   Check **Last official event** and **Last saved**. If both change, verify
-   the corresponding **ChatGPT** history entry and MyChatGPT Android notice.
-5. Swipe away the Android notification; the MyChatGPT history entry must
-   remain. Relaunch MyChatGPT and verify the history persists.
-
-This Android companion relay is **optional** and is not required for the
-foreground direct completion or popup detection.
-
-The listener immediately filters by exact package
-`com.openai.chatgpt` **before reading notification text or extras**. Other
-apps' notifications are ignored, never saved and never sent to a server.
-Nevertheless, Android's notification access grant is system-wide, so the
-settings page must disclose that capability and the user must opt in.
-
-Some original ChatGPT notices may appear alongside a mirrored MyChatGPT
-notice; this implementation does not cancel or hide the official app's
-notifications. Silence the official app's *sound* if desired, but **do not
-block the app's notifications** or there will be nothing to relay.
-
-### What the OS relay can and cannot do
-
-- Receives official ChatGPT notifications in foreground/background via
-  Android's managed notification listener (the WebView need not be alive).
-  On reconnect it archives still-outstanding official notifications without
-  generating fresh Android alerts.
-- Private SQLite history uses a SHA-256 event fingerprint with unique index,
-  preventing reimport on reconnect or repeat delivery. The v1 database
-  migrates to v2 without dropping history.
-- If Android includes an explicit safe conversation URL in the notification
-  text, it is saved. Android normally exposes only an **opaque PendingIntent**,
-  not the underlying ChatGPT chat URL. The app **does not invent an exact
-  conversation link**; a record without one opens the history, not a made-up
-  chat destination.
-- Cannot receive any ChatGPT push if the official Android app notifications
-  are disabled, the user revokes Notification Access, Android suppresses that
-  notification, or ChatGPT never generates a push event. This is not an
-  independent replacement for the official push transport.
-- If the OS strips confidential/sensitive notification text, the listener
-  cannot recover it. The "Last official event" time may update without a
-  usable history row. Only unredacted content supplied by Android is used.
-- The listener starts an Application process while backgrounded, but no
-  WebView-crash-counter is bumped until an actual MainActivity starts.
-
-## Foreground capture v2
-
-The previous popup watcher only matched a small set of toast elements and waited
-170 ms before checking them. Some transient website notices appeared/disappeared
-or changed visibility/text before the watcher could capture them.
-
-The latest main-document watcher also observes CSS class/style
-transitions and generic floating cards without marker attributes, handles
-late text, and tries to catch very short-lived UI elements immediately.
-The independent response-state observer generates a completion record even
-if no popup appears. It excludes
-conversation turns, composer fields, dialogs and navigation areas to avoid
-logging normal chat content. The original Android posting/SQLite storage and
-chat-routing code remains intact.
-
-The in-app Notifications page shows **Site popup listener: ACTIVE** after the
-injected watcher reports successful installation, and a count of real website
-popups captured during the current app session. It also has two separate tests:
-
-- **SEND TEST** validates Android notification posting and SQLite history, but
-  bypasses the website.
-- **TEST SITE POPUP CAPTURE** creates a temporary toast in the ChatGPT WebView
-  and exercises the full page MutationObserver -> JavaScript bridge -> SQLite
-  -> Android notification path. The matching history item is clearly labeled
-  `MyChatGPT capture test`, not a real site notification.
-
-To verify on the Flip 7: open a ChatGPT conversation, expand Notifications,
-confirm the watcher is ACTIVE, run TEST SITE POPUP CAPTURE, then trigger a
-genuine popup (not the test). Confirm it is reflected once in both Android
-notifications and MyChatGPT history with a timestamp. Dismissing the Android
-notification must not clear the saved record. Re-test after WebView reload or
-renderer recreation; the same observer is registered at document start.
-
-In addition to the page observer, all existing MyChatGPT-owned Android
-`Toast.makeText` call sites now use `AppToast`: the original transient toast
-is still displayed, and a separate **MyChatGPT popup** item is stored locally
-and posted through Android when enabled. This covers existing download, share,
-reload, settings and failure popups without requiring a DOM observer.
-
-Neither path intercepts external apps' toasts, OEM-generated system UI notices,
-or cloud push while the WebView is terminated. Website toast markup may change
-with future ChatGPT releases.
-
-## On-device acceptance checks (Flip 7)
-
-- Icon (not `TUNE`) opens menu; back and close work; page fits folded cover
-  screen in both top and bottom corners and is scrollable.
-- Tune options retain previous values and behavior.
-- In Notifications, SEND TEST: grant Android permission once, confirm a
-  timestamped system entry and identical timestamped in-app history entry.
-- Swipe the Android notification away. Reopen the menu; the history entry remains.
-- With a ChatGPT conversation open, send another test; tap Android notification
-  and history row separately. Both should reopen that conversation.
-- Trigger a *real* ChatGPT site toast while the WebView is running; verify a
-  single saved event and system notification, not duplicates from DOM changes.
-- Turn official ChatGPT notifications **on**, grant MyChatGPT Notification
-  Access, trigger an actual ChatGPT push and confirm **Last official event**
-  updates and a timestamped `official-chatgpt` history entry appears.
-- Repeat with MyChatGPT backgrounded. Do not treat SEND TEST as proof of
-  upstream ChatGPT push.
-- Revoke Notification Access and verify OS relay stops receiving other app
-  notifications.
-- Disable Android alerts; ensure history still grows with no Android post.
-- Deny notification permission; ensure history and navigation still work.
-- Trigger an existing native MyChatGPT Toast (such as a download/share status); verify the original popup remains visible AND a timestamped **MyChatGPT popup** appears in history and Android.
-- Kill/relaunch the app; verify log remains. Use Older/Newer paging.
-- CLEAR requires confirmation; it clears history and posted app notifications.
+- The WebView completion monitor must observe a generation while it runs.
+  Android can pause or terminate the WebView in the background, so this
+  method cannot promise independent background push or reconstruct events
+  during process death.
+- Website scheduled-task popups can vary in wording or markup. The filter
+  deliberately prefers **missing an ambiguous event** to spamming routine
+  clicks and popups. A real task alert without recognizable task/reminder
+  cues may need a new grounded classifier rule based on its actual wording.
+- If optional official ChatGPT app mirroring is enabled, that official app
+  must post Android notifications and MyChatGPT must be granted Notification
+  Access. Android's permission exposes all apps' notifications, although
+  this service discards other packages before reading their content.
+  The official app may still show its own notification alongside a mirrored
+  task notice.
+- ChatGPT site UI structure can change, so chat labels may not always be
+  available. The app never invents a chat or project label.
+- ChatGPT site popup text may include private content. The app does not
+  log payloads or transmit them to additional services; local database rows
+  stay until manually cleared.

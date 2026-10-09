@@ -7,7 +7,7 @@
     if (host !== 'chatgpt.com' && !host.endsWith('.chatgpt.com')) return;
 
     var older = window.__mychatgptSiteNotificationMonitor;
-    if (older && older.version === 3 && older.active) {
+    if (older && older.version === 4 && older.active) {
       older.scan();
       older.report(true);
       return;
@@ -50,7 +50,9 @@
     var response = { active: false, route: '', since: 0, finishing: 0,
                      interrupted: false, generation: 0, lastStop: 0,
                      startingIdentity: '', startingLength: 0 };
-    var monitor = { version: 3, active: false };
+    var monitor = { version: 4, active: false };
+    var titleCache = new Map();
+    var nameTimer = 0;
 
     function bridge() { return window.AndroidBridge; }
     function report(force) {
@@ -192,11 +194,100 @@
         }
       } catch (ignored) {}
     }
+    // User-visible chat titles come from the sidebar anchor for this exact
+    // conversation; project labels are only read from project breadcrumbs.
+    var normalizeLabel = function (value) {
+      var name = (value || '').replace(/\s+/g, ' ').trim();
+      if (!name || name.length > 130 || /https?:\/\/|[<>]/i.test(name)) return '';
+      return /^(chatgpt|new chat|new conversation|chats|projects|untitled|open chat|chat options|more options)$/i.test(name)
+          ? '' : name;
+    };
+    function sameSitePath(url) {
+      try {
+        var u = new URL(url, location.href);
+        if (u.protocol !== 'https:' ||
+            (u.hostname !== 'chatgpt.com' && !u.hostname.endsWith('.chatgpt.com'))) return '';
+        return u.pathname.replace(/\/$/, '');
+      } catch (ignored) { return ''; }
+    }
+    function anchorLabel(a) {
+      if (!a) return '';
+      var labelNode = a.querySelector('[data-testid*="conversation-title"],[data-testid*="chat-title"]');
+      return normalizeLabel(labelNode && labelNode.textContent)
+          || normalizeLabel(a.getAttribute('title'))
+          || normalizeLabel(a.textContent)
+          || normalizeLabel(a.getAttribute('aria-label'));
+    }
+    function namesFor(conversation) {
+      var path = sameSitePath(conversation);
+      if (!path || !/(?:^|\/)c\/[A-Za-z0-9-]{8,128}$/.test(path))
+        return {chat:'', project:''};
+      var previous = titleCache.get(path) || {chat:'',project:''};
+      var chat = '', project = '';
+      try {
+        var links = document.querySelectorAll(
+          'nav a[href*="/c/"],aside a[href*="/c/"],'
+          + '[data-testid*="sidebar"] a[href*="/c/"],'
+          + 'a[aria-current="page"][href*="/c/"]');
+        for (var i = 0; i < links.length && i < 180; i++) {
+          if (sameSitePath(links[i].href) !== path) continue;
+          chat = anchorLabel(links[i]);
+          if (chat) break;
+        }
+        var pr = path.match(/^\/g\/g-p-[A-Za-z0-9-]+/);
+        if (pr) {
+          var projectLinks = document.querySelectorAll(
+            'header a[href*="/g/g-p-"],'
+            + 'nav a[href*="/g/g-p-"],'
+            + '[data-testid*="breadcrumb"] a[href*="/g/g-p-"]');
+          for (var j = 0; j < projectLinks.length && j < 90; j++) {
+            if (sameSitePath(projectLinks[j].href) !== pr[0]) continue;
+            project = anchorLabel(projectLinks[j]);
+            if (project) break;
+          }
+          if (!project) {
+            var crumb = document.querySelector(
+              'header [data-testid*="project-name"],'
+              + 'header [data-testid*="project-title"],'
+              + '[data-testid="project-name"]');
+            project = normalizeLabel(crumb && crumb.textContent);
+          }
+        }
+        // Within projects, the browser title may itself be the project name.
+        // Only treat it as the chat title when we can distinguish the two.
+        if (!chat) {
+          var pageTitle = normalizeLabel(
+            (document.title || '').replace(/\s*[-–—|]\s*ChatGPT\s*$/i, ''));
+          if (!pr || (project && pageTitle &&
+                      pageTitle.toLowerCase() !== project.toLowerCase())) {
+            chat = pageTitle;
+          }
+        }
+      } catch (ignored) {}
+      var result = {chat:chat || previous.chat, project:project || previous.project};
+      if (result.chat && result.project &&
+          result.chat.toLowerCase() === result.project.toLowerCase()) result.project = '';
+      if (result.chat || result.project) {
+        titleCache.set(path, result);
+        if (titleCache.size > 25) titleCache.delete(titleCache.keys().next().value);
+      }
+      return result;
+    }
+    function scheduleNameRefresh() {
+      if (nameTimer) return;
+      nameTimer = setTimeout(function () {
+        nameTimer = 0;
+        var current = route();
+        if (current) namesFor(current);
+      }, 480);
+    }
+
     function destination(el) {
       var a = el.querySelector('a[href*="/c/"]');
       if (a && a.href) return a.href;
-      return /(?:^|\/)c\/[A-Za-z0-9-]{8,128}(?:\/|$)/.test(location.pathname)
-           ? location.href : '';
+      // Scheduled tasks may belong to a different chat. Never guess that
+      // the currently open conversation is the correct destination.
+      return '';
     }
     function flush() {
       timer = 0;
@@ -240,7 +331,9 @@
             return;
           }
           delivered.set(el, { text: text, count: old ? old.count + 1 : 1, at: Date.now() });
-          b.siteNotification(text, destination(el));
+          var dest = destination(el);
+          var names = dest ? namesFor(dest) : {chat:'',project:''};
+          b.siteNotification(text, dest, names.chat, names.project);
           stats.sent++;
           report(true);
         } catch (ignored) {}
@@ -248,6 +341,7 @@
       if (retry && !timer) timer = setTimeout(flush, 65);
     }
     function scan() {
+      scheduleNameRefresh();
       try {
         var nodes = document.querySelectorAll(STRONG + ',' + SEMANTIC);
         for (var i = 0; i < nodes.length && i < 90; i++) {
@@ -381,7 +475,8 @@
         // No conversation or assistant text leaves the web page; only the
         // validated route and a non-content identifier go to Android.
         var key = signal.identity || ('session-' + now + '-' + response.generation);
-        b.chatResponseCompleted(current, key);
+        var info = namesFor(current);
+        b.chatResponseCompleted(current, key, info.chat, info.project);
         stats.completed++;
         report(true);
       }
@@ -430,6 +525,7 @@
         }
       }
       scheduleState();
+      scheduleNameRefresh();
       if (Date.now() - pulseAt > 2400) report(false);
     });
     observer.observe(document, {
@@ -451,7 +547,9 @@
       document.removeEventListener('visibilitychange', scheduleState);
       if (timer) clearTimeout(timer);
       if (stateTimer) clearTimeout(stateTimer);
+      if (nameTimer) clearTimeout(nameTimer);
       pending.clear();
+      titleCache.clear();
     };
     window.__mychatgptSiteNotificationMonitor = monitor;
     report(true);

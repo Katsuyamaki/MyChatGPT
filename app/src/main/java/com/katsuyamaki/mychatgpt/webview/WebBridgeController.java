@@ -23,11 +23,13 @@ public final class WebBridgeController {
     public interface Host {
         WebView getMainWebView();
         void onPageReady();
-        void onSiteNotification(String text, String candidateUrl);
+        void onSiteNotification(String text, String candidateUrl,
+                                String chatTitle, String projectName);
         void onSiteMonitorReady();
         void onSiteMonitorMetrics(int mutations, int candidates, int floating,
                                   int sent, int generating, int completed);
-        void onChatResponseCompleted(String url, String turnKey);
+        void onChatResponseCompleted(String url, String turnKey,
+                                     String chatTitle, String projectName);
     }
 
     private final Activity activity;
@@ -97,11 +99,12 @@ public final class WebBridgeController {
     }
 
     @JavascriptInterface
-    public void siteNotification(final String text, final String candidateUrl) {
+    public void siteNotification(final String text, final String candidateUrl,
+                                 final String chatTitle, final String projectName) {
         activity.runOnUiThread(() -> {
             if (hostWebView != host.getMainWebView()) return;
             if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
-            host.onSiteNotification(text, candidateUrl);
+            host.onSiteNotification(text, candidateUrl, chatTitle, projectName);
         });
     }
 
@@ -120,11 +123,19 @@ public final class WebBridgeController {
 
     /** Stable per-turn completion state, not the assistant response body. */
     @JavascriptInterface
-    public void chatResponseCompleted(final String url, final String turnKey) {
+    public void chatResponseCompleted(final String url, final String turnKey,
+                                      final String chatTitle, final String projectName) {
         activity.runOnUiThread(() -> {
             if (hostWebView != host.getMainWebView()) return;
             if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
-            host.onChatResponseCompleted(url, turnKey);
+            // The active main-frame route must match the reported completion,
+            // not a stale conversation the WebView navigated away from.
+            String live = com.katsuyamaki.mychatgpt.notifications.NotificationController
+                    .safeChatUrl(hostWebView.getUrl());
+            String claimed = com.katsuyamaki.mychatgpt.notifications.NotificationController
+                    .safeChatUrl(url);
+            if (live == null || !live.equals(claimed)) return;
+            host.onChatResponseCompleted(url, turnKey, chatTitle, projectName);
         });
     }
 

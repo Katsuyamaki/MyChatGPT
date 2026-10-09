@@ -62,6 +62,8 @@ public final class NotificationController {
     private int siteMutationsObserved;
     private int completionsRecordedThisSession;
     private long latestCompletionAt;
+    private boolean lastCompletionHadChatTitle;
+    private boolean lastCompletionHadProjectName;
 
     public NotificationController(Context context) {
         this.context = context.getApplicationContext();
@@ -203,7 +205,9 @@ public final class NotificationController {
                 + "Generation starts: " + siteGenerationSignals + "\n"
                 + "Completion signals forwarded: " + siteCompletionSignals + "\n"
                 + "Real popups saved this session: " + siteCapturesThisSession + "\n"
-                + "Response completions saved this session: " + completionsRecordedThisSession;
+                + "Response completions saved this session: " + completionsRecordedThisSession + "\n"
+                + "Last completion chat title available: " + lastCompletionHadChatTitle + "\n"
+                + "Last completion project name available: " + lastCompletionHadProjectName;
     }
 
     public int completionsRecordedThisSession() {
@@ -230,24 +234,62 @@ public final class NotificationController {
         return latestSiteCaptureAt;
     }
 
-    public long recordSiteNotification(String text, String candidateUrl) {
+    /**
+     * A DOM popup alone is not a user-facing notification. Reject sidebar,
+     * clipboard, download and generic UI notices at this native boundary.
+     * The synthetic probe remains explicitly test-only and is hidden from
+     * the regular inbox (viewable under "Show other history").
+     */
+    public long recordSiteNotification(String text, String candidateUrl,
+                                       String chatTitle, String projectName) {
         String body = clean(text);
         if (body.isEmpty()) return 0;
+        boolean probe = body.startsWith("MyChatGPT site capture test:")
+                || body.startsWith("MyChatGPT unmarked capture test:");
+        if (!probe && !NotificationFilter.isScheduledTaskOccurrence("", body)) {
+            return 0;
+        }
         String chatUrl = safeChatUrl(candidateUrl);
         long now = SystemClock.elapsedRealtime();
-        String key = body + "|" + chatUrl;
+        String key = "web-task|" + body + "|" + chatUrl;
         synchronized (recentKeys) {
             Long prev = recentKeys.get(key);
-            if (prev != null && now >= prev && now - prev < 10000) return 0;
+            if (prev != null && now >= prev && now - prev < 15000) return 0;
             recentKeys.put(key, now);
             if (recentKeys.size() > 40) {
                 recentKeys.remove(recentKeys.keySet().iterator().next());
             }
         }
-        boolean probe = body.startsWith("MyChatGPT site capture test:")
-                || body.startsWith("MyChatGPT unmarked capture test:");
-        long id = record(probe ? "MyChatGPT capture test" : "ChatGPT update",
-                body, chatUrl, probe ? "site-test" : "site");
+        long id;
+        if (probe) {
+            id = record("MyChatGPT capture test", body, chatUrl, "site-test");
+        } else {
+            try {
+                long when = System.currentTimeMillis();
+                // A repeated render/reconnect does not announce the same task
+                // again, but the same recurring task can alert on later runs.
+                String fingerprint = sha256("site-scheduled-task\n" + body
+                        + "\n" + chatUrl + "\n" + (when / 120000L));
+                String chatName = chatUrl == null ? "" : safeLabel(chatTitle);
+                String project = chatUrl == null ? "" : safeLabel(projectName);
+                if (!chatName.isEmpty() && chatName.equalsIgnoreCase(project)) {
+                    project = "";
+                }
+                String title = chatName.isEmpty()
+                        ? "Scheduled task" : "Scheduled task · " + chatName;
+                String content = project.isEmpty()
+                        ? body : body + " · Project: " + project;
+                id = store.addExternal(title, content, chatUrl,
+                        "scheduled-task", when, fingerprint);
+                if (id > 0 && canPostAndroid()) {
+                    postAndroid(id, title, content, when);
+                }
+                if (id > 0) notifyHistoryChanged();
+            } catch (Exception ex) {
+                Log.e(TAG, "Scheduled task notification persistence failed", ex);
+                return 0;
+            }
+        }
         if (id > 0) {
             if (probe) siteProbeCapturesThisSession++;
             else siteCapturesThisSession++;
@@ -265,20 +307,29 @@ public final class NotificationController {
      * so a WebView reload cannot duplicate the same completion. No message
      * text is transferred from the page.
      */
-    public long recordResponseCompletion(String conversation, String turnKey) {
+    public long recordResponseCompletion(String conversation, String turnKey,
+                                         String chatTitle, String projectName) {
         String url = safeChatUrl(conversation);
         if (url == null || turnKey == null || turnKey.length() < 3
                 || turnKey.length() > 160) return 0;
+        String name = safeLabel(chatTitle);
+        String project = safeLabel(projectName);
+        if (!name.isEmpty() && name.equalsIgnoreCase(project)) project = "";
         try {
+            // Title content does NOT affect the stable turn fingerprint.
             String fingerprint = sha256("response-complete\n" + url + "\n" + turnKey);
-            String title = "ChatGPT response complete";
-            String body = "A reply is ready in your conversation.";
+            String title = name.isEmpty() ? "ChatGPT response complete" : name;
+            String body = project.isEmpty()
+                    ? "Response complete"
+                    : "Response complete · Project: " + project;
             long when = System.currentTimeMillis();
             long id = store.addExternal(title, body, url, "completion",
                     when, fingerprint);
             if (id <= 0) return 0;
             completionsRecordedThisSession++;
             latestCompletionAt = when;
+            lastCompletionHadChatTitle = !name.isEmpty();
+            lastCompletionHadProjectName = !project.isEmpty();
             if (canPostAndroid()) postAndroid(id, title, body, when);
             notifyHistoryChanged();
             return id;
@@ -300,26 +351,6 @@ public final class NotificationController {
         return out.toString();
     }
 
-    /** Existing native Android Toasts also become durable, timestamped entries. */
-    public long recordAppToast(String text, String currentUrl) {
-        String body = clean(text);
-        if (body.isEmpty()) return 0;
-        String chatUrl = safeChatUrl(currentUrl);
-        long now = SystemClock.elapsedRealtime();
-        String key = "native|" + body + "|" + chatUrl;
-        synchronized (recentKeys) {
-            Long previous = recentKeys.get(key);
-            if (previous != null && now >= previous && now - previous < 10000) {
-                return 0;
-            }
-            recentKeys.put(key, now);
-            if (recentKeys.size() > 40) {
-                recentKeys.remove(recentKeys.keySet().iterator().next());
-            }
-        }
-        return record("MyChatGPT popup", body, chatUrl, "app-toast");
-    }
-
     /**
      * Called only after the OS notification-listener service validates the
      * source package. Android notifications can be posted while WebView is
@@ -335,17 +366,20 @@ public final class NotificationController {
                 || "ChatGPT".equalsIgnoreCase(cleanTitle))) return 0;
         if (cleanTitle.isEmpty()) cleanTitle = "ChatGPT";
         if (cleanBody.isEmpty()) cleanBody = cleanTitle;
+        if (!NotificationFilter.isScheduledTaskOccurrence(cleanTitle, cleanBody)) {
+            return 0;
+        }
         if (externalDigest == null || externalDigest.length() != 64) return 0;
         String url = safeChatUrl(candidateUrl);
         long when = postedAt > 0 ? postedAt : System.currentTimeMillis();
         try {
-            long id = store.addExternal(cleanTitle, cleanBody, url,
-                    "official-chatgpt", when, externalDigest);
+            long id = store.addExternal("Scheduled task · " + cleanTitle, cleanBody, url,
+                    "official-task", when, externalDigest);
             if (id <= 0) return 0;
             // Reconnected listeners archive outstanding notifications silently:
             // only freshly posted events create another Android shade entry.
             if (!replay && canPostAndroid()) {
-                postAndroid(id, "ChatGPT · " + cleanTitle, cleanBody, when);
+                postAndroid(id, "Scheduled task · " + cleanTitle, cleanBody, when);
             }
             prefs.edit().putLong(KEY_OS_SAVED_AT, System.currentTimeMillis()).apply();
             notifyHistoryChanged();
@@ -377,7 +411,11 @@ public final class NotificationController {
     public List<NotificationStore.Entry> recent(int limit, int offset) {
         return store.recent(limit, offset);
     }
+    public List<NotificationStore.Entry> recent(int limit, int offset, boolean showAll) {
+        return store.recent(limit, offset, showAll);
+    }
     public int totalCount() { return store.totalCount(); }
+    public int totalCount(boolean showAll) { return store.totalCount(showAll); }
     public NotificationStore.Entry find(long id) { return id > 0 ? store.find(id) : null; }
     public int unreadCount() { return store.unreadCount(); }
     public void markRead(long id) {
@@ -446,6 +484,21 @@ public final class NotificationController {
         }
     }
     private static int notificationId(long id) { return (int) (id % Integer.MAX_VALUE); }
+    /** Chat/project labels are display metadata; never use them as navigation URLs. */
+    private static String safeLabel(String raw) {
+        if (raw == null) return "";
+        String value = raw.replaceAll("[\\p{Cntrl}\\p{Cf}]", " ")
+                .replaceAll("\\s+", " ").trim();
+        if (value.length() > 120) value = value.substring(0, 120).trim();
+        if (value.isEmpty() || value.contains("<") || value.contains(">")
+                || value.contains("://")
+                || value.equalsIgnoreCase("ChatGPT")
+                || value.equalsIgnoreCase("New chat")
+                || value.equalsIgnoreCase("Open chat")
+                || value.equalsIgnoreCase("Chat options")) return "";
+        return value;
+    }
+
     private static String clean(String text) {
         if (text == null) return "";
         String value = text.replaceAll("\\s+", " ").trim();

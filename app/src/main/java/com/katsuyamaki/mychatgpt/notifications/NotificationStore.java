@@ -18,6 +18,10 @@ public final class NotificationStore extends SQLiteOpenHelper {
     private static final String DATABASE = "mychatgpt_notifications.db";
     private static final int VERSION = 2;
     private static final String TABLE = "events";
+    // Old site/native/test alerts stay on disk for diagnostic review, but the
+    // normal inbox and unread badge show only the two requested event types.
+    private static final String IMPORTANT =
+            "source IN ('completion', 'scheduled-task', 'official-task')";
 
     public static final class Entry {
         public final long id;
@@ -120,15 +124,19 @@ public final class NotificationStore extends SQLiteOpenHelper {
     }
 
     public synchronized List<Entry> recent(int limit) {
-        return recent(limit, 0);
+        return recent(limit, 0, false);
     }
 
     public synchronized List<Entry> recent(int limit, int offset) {
+        return recent(limit, offset, false);
+    }
+
+    public synchronized List<Entry> recent(int limit, int offset, boolean showAll) {
         List<Entry> entries = new ArrayList<>();
         int safeLimit = Math.min(100, Math.max(1, limit));
         int safeOffset = Math.max(0, offset);
         try (Cursor cursor = getReadableDatabase().query(
-                TABLE, null, null, null, null, null,
+                TABLE, null, showAll ? null : IMPORTANT, null, null, null,
                 "created_at DESC, _id DESC", safeOffset + "," + safeLimit)) {
             while (cursor.moveToNext()) {
                 entries.add(fromCursor(cursor));
@@ -138,15 +146,21 @@ public final class NotificationStore extends SQLiteOpenHelper {
     }
 
     public synchronized int totalCount() {
+        return totalCount(false);
+    }
+
+    public synchronized int totalCount(boolean showAll) {
         try (Cursor cursor = getReadableDatabase().rawQuery(
-                "SELECT COUNT(*) FROM " + TABLE, null)) {
+                "SELECT COUNT(*) FROM " + TABLE
+                        + (showAll ? "" : " WHERE " + IMPORTANT), null)) {
             return cursor.moveToFirst() ? cursor.getInt(0) : 0;
         }
     }
 
     public synchronized int unreadCount() {
         try (Cursor cursor = getReadableDatabase().rawQuery(
-                "SELECT COUNT(*) FROM " + TABLE + " WHERE read_at=0", null)) {
+                "SELECT COUNT(*) FROM " + TABLE
+                        + " WHERE read_at=0 AND " + IMPORTANT, null)) {
             return cursor.moveToFirst() ? cursor.getInt(0) : 0;
         }
     }
