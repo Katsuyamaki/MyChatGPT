@@ -66,6 +66,8 @@ public final class WebBridgeController {
 
     @JavascriptInterface
     public void pageReady() {
+        // hostAllowed() reads WebView URL state, so keep that gate on the UI
+        // thread rather than the JavaScript bridge thread.
         activity.runOnUiThread(() -> {
             if (!hostAllowed()) return;
             host.onPageReady();
