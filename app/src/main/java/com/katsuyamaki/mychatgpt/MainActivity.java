@@ -96,6 +96,9 @@ public class MainActivity extends Activity {
     private NativeShellController nativeShellController;
     private NotificationController notificationController;
     private boolean testAfterNotificationPermission;
+    private final Runnable notificationHistoryChanged = () -> {
+        if (nativeShellController != null) nativeShellController.refreshNotifications();
+    };
 
     // Pending WebView permission request (camera/mic) while the OS dialog is up
     private PermissionRequest pendingWebPermissionRequest;
@@ -191,6 +194,10 @@ public class MainActivity extends Activity {
                 Log.e(TAG, "share relay start failed; booting in place", t);
             }
         }
+
+        // Count only real WebView launches, not background notification
+        // listener starts (which also run Application.onCreate).
+        CrashTracker.init(getApplicationContext());
 
         // ─── WebView switcher pre-launch checks ────────────────────────────
         // (1) If the current WebView is too old to support DOCUMENT_START_SCRIPT,
@@ -350,6 +357,7 @@ public class MainActivity extends Activity {
                     }
                 });
         loadingStateController.initializePresentation();
+        NotificationController.observeHistory(notificationHistoryChanged);
 
         // Wire the WebView up (initial setup; recreated in place if the
         // renderer ever dies — see onRenderProcessGone).
@@ -451,7 +459,8 @@ public class MainActivity extends Activity {
             nativeShellController.closePanelIfOpen();
             mainWebViewController.loadUrl(webview, chatUrl);
         } else {
-            AppToast.makeText(this, "This notice has no linked conversation",
+            // Avoid turning the history warning itself into another notification.
+            Toast.makeText(this, "Android did not supply a conversation link",
                     Toast.LENGTH_SHORT).show();
         }
     }
@@ -1024,6 +1033,9 @@ public class MainActivity extends Activity {
         super.onResume();
         if (mainWebViewController != null) mainWebViewController.resume(webview);
         if (popupAuthController != null) popupAuthController.resumeAll();
+        // Android notification access may have been granted in Settings while
+        // we were backgrounded, or a real push archived by the OS listener.
+        if (nativeShellController != null) nativeShellController.refreshNotifications();
     }
 
     @Override
@@ -1074,6 +1086,7 @@ public class MainActivity extends Activity {
         if (nativeShellController != null) {
             nativeShellController.destroy();
         }
+        NotificationController.observeHistory(null);
         if (notificationController != null) {
             AppToast.detach(notificationController);
             notificationController.close();

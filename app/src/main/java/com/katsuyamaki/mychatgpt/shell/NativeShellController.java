@@ -461,6 +461,49 @@ public final class NativeShellController {
         state.setPadding(dp(4), 0, dp(4), dp(9));
         pageContent.addView(state);
 
+        // INPUT, not output: the tests below create local notifications; this
+        // Android listener is the source for real official ChatGPT pushes.
+        boolean listenerAccess = notifications.hasOfficialPushMirrorAccess();
+        String sourceStatus = !listenerAccess
+                ? "Official ChatGPT push: ACCESS NEEDED"
+                : notifications.isOsListenerConnected()
+                    ? "Official ChatGPT push: LISTENING"
+                    : "Official ChatGPT push: access granted, connecting";
+        TextView pushStatus = makeLabel(sourceStatus, 12f);
+        pushStatus.setTypeface(null, android.graphics.Typeface.BOLD);
+        pushStatus.setTextColor(listenerAccess ? 0xFFAFE8D0 : 0xFFFFD5A0);
+        pushStatus.setPadding(dp(4), 0, dp(4), dp(7));
+        pageContent.addView(pushStatus);
+
+        long seen = notifications.latestOfficialSeenAt();
+        long saved = notifications.latestOfficialSavedAt();
+        TextView sourceActivity = makeLabel(
+                "Last official event: " + (seen == 0 ? "none"
+                        : NotificationController.formatTimestamp(seen))
+                + "  ·  Last saved: " + (saved == 0 ? "none"
+                        : NotificationController.formatTimestamp(saved)), 10f);
+        sourceActivity.setPadding(dp(4), 0, dp(4), dp(6));
+        pageContent.addView(sourceActivity);
+
+        TextView sourceHelp = makeLabel(
+                "Requires official ChatGPT app alerts ON. Android Notification "
+                + "Access can read all app alerts; MyChatGPT only processes "
+                + "ChatGPT's package. Both apps may show an Android alert.", 10f);
+        sourceHelp.setPadding(dp(4), 0, dp(4), dp(9));
+        pageContent.addView(sourceHelp);
+
+        TextView access = makeButton(listenerAccess
+                ? "MANAGE MIRROR ACCESS" : "GRANT MIRROR ACCESS");
+        pageContent.addView(access, fullWidthButton(38));
+        access.setOnClickListener(v -> openNotificationListenerSettings());
+
+        TextView officialSettings = makeButton("CHATGPT APP ALERT SETTINGS");
+        LinearLayout.LayoutParams nativeSettingsParams = fullWidthButton(36);
+        nativeSettingsParams.topMargin = dp(5);
+        nativeSettingsParams.bottomMargin = dp(10);
+        pageContent.addView(officialSettings, nativeSettingsParams);
+        officialSettings.setOnClickListener(v -> openOfficialChatGptNotificationSettings());
+
         String watcher = notifications.isSiteMonitorActive()
                 ? "Site popup listener: ACTIVE"
                 : "Site popup listener: waiting for ChatGPT";
@@ -473,7 +516,7 @@ public final class NativeShellController {
 
         TextView toggle = makeButton(
                 !notifications.isAndroidEnabled() ? "ENABLE ANDROID ALERTS"
-                : notifications.needsPermission() ? "GRANT NOTIFICATION ACCESS"
+                : notifications.needsPermission() ? "ALLOW MYCHATGPT ALERTS"
                 : "DISABLE ANDROID ALERTS");
         pageContent.addView(toggle, fullWidthButton(40));
         toggle.setOnClickListener(v -> {
@@ -531,7 +574,7 @@ public final class NativeShellController {
         int total = notifications.totalCount();
         if (total == 0) {
             TextView empty = makeLabel(
-                    "No notifications yet. Site popups captured while MyChatGPT is open appear here.",
+                    "No notifications saved yet. Real ChatGPT alerts, website popups and MyChatGPT status messages appear here.",
                     12f);
             empty.setPadding(dp(4), dp(8), dp(4), dp(10));
             pageContent.addView(empty);
@@ -560,8 +603,10 @@ public final class NativeShellController {
             body.setPadding(0, dp(4), 0, dp(2));
             row.addView(body);
             TextView link = makeLabel(
-                    item.chatUrl == null
-                            ? "No chat link provided" : "Tap to open conversation", 10f);
+                    item.chatUrl != null ? "Tap to open conversation"
+                    : "official-chatgpt".equals(item.source)
+                        ? "Android did not provide a chat link"
+                        : "No chat link provided", 10f);
             link.setTextColor(0xFFA8D4FF);
             row.addView(link);
             LinearLayout.LayoutParams itemParams = fullWidthWrap();
@@ -590,6 +635,35 @@ public final class NativeShellController {
             notificationOffset += PAGE_SIZE;
             showPage(PAGE_NOTIFICATIONS);
         });
+    }
+
+    private void openNotificationListenerSettings() {
+        try {
+            activity.startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+        } catch (Exception ex) {
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(
+                    activity, "Could not open Notification Access settings",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void openOfficialChatGptNotificationSettings() {
+        try {
+            String app = NotificationController.OFFICIAL_CHATGPT_PACKAGE;
+            Intent intent;
+            if (Build.VERSION.SDK_INT >= 26) {
+                intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                intent.putExtra(Settings.EXTRA_APP_PACKAGE, app);
+            } else {
+                intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + app));
+            }
+            activity.startActivity(intent);
+        } catch (Exception ex) {
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(
+                    activity, "Could not open ChatGPT notification settings",
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     private void openAndroidNotificationSettings() {

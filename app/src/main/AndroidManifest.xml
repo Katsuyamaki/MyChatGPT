@@ -81,6 +81,19 @@
             android:exported="false"
             android:enabled="true" />
 
+        <!-- Optional companion-app notification relay. Android binds this only
+             after the user explicitly grants Notification Access. The service
+             filters com.openai.chatgpt BEFORE inspecting notification content. -->
+        <service
+            android:name=".notifications.ChatGptNotificationListenerService"
+            android:label="MyChatGPT · ChatGPT push mirror"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <!-- FileProvider so we can share downloaded images via ACTION_SEND -->
         <provider
             android:name="androidx.core.content.FileProvider"

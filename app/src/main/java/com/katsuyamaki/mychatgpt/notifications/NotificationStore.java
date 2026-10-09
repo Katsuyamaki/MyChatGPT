@@ -16,7 +16,7 @@ import java.util.List;
  */
 public final class NotificationStore extends SQLiteOpenHelper {
     private static final String DATABASE = "mychatgpt_notifications.db";
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final String TABLE = "events";
 
     public static final class Entry {
@@ -58,14 +58,22 @@ public final class NotificationStore extends SQLiteOpenHelper {
                 + "chat_url TEXT,"
                 + "source TEXT NOT NULL,"
                 + "created_at INTEGER NOT NULL,"
-                + "read_at INTEGER NOT NULL DEFAULT 0)");
+                + "read_at INTEGER NOT NULL DEFAULT 0,"
+                + "external_key TEXT)");
+        db.execSQL("CREATE UNIQUE INDEX events_external_key ON " + TABLE
+                + " (external_key)");
         db.execSQL("CREATE INDEX events_created ON " + TABLE
                 + " (created_at DESC, _id DESC)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // Future schema migrations must preserve existing notification history.
+        // No destructive migration: existing site, app, and test entries persist.
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN external_key TEXT");
+            db.execSQL("CREATE UNIQUE INDEX events_external_key ON " + TABLE
+                    + " (external_key)");
+        }
     }
 
     public synchronized long add(String title, String body, String chatUrl,
@@ -77,6 +85,30 @@ public final class NotificationStore extends SQLiteOpenHelper {
         values.put("source", source);
         values.put("created_at", createdAt);
         return getWritableDatabase().insertOrThrow(TABLE, null, values);
+    }
+
+    /**
+     * Atomically deduplicate third-party notifications across listener
+     * reconnects, app restarts, and a history scan of active OS notifications.
+     * The external key is a SHA-256 digest, not another app's raw content.
+     *
+     * @return inserted row ID; -1 when the exact notice was already recorded.
+     */
+    public synchronized long addExternal(String title, String body, String chatUrl,
+                                         String source, long createdAt,
+                                         String externalKey) {
+        if (externalKey == null || externalKey.isEmpty()) {
+            throw new IllegalArgumentException("Missing external notification key");
+        }
+        ContentValues values = new ContentValues();
+        values.put("title", title);
+        values.put("body", body);
+        values.put("chat_url", chatUrl);
+        values.put("source", source);
+        values.put("created_at", createdAt);
+        values.put("external_key", externalKey);
+        return getWritableDatabase().insertWithOnConflict(
+                TABLE, null, values, SQLiteDatabase.CONFLICT_IGNORE);
     }
 
     public synchronized Entry find(long id) {

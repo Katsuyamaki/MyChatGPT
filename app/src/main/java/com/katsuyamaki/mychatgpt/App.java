@@ -6,7 +6,6 @@ import android.content.SharedPreferences;
 import android.util.Log;
 import android.widget.Toast;
 
-import com.katsuyamaki.mychatgpt.webview.CrashTracker;
 import com.katsuyamaki.mychatgpt.webview.Hooker;
 import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
 
@@ -28,8 +27,9 @@ import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
  *                                      installs a fake DeveloperModeContentProvider
  *                                      so the chosen WebView enables GPU blocklist
  *                                      bypass + surface control
- *   4. CrashTracker.init()          — bump crash counter (reset later on
- *                                      successful WebView load)
+ *   4. CrashTracker is initialized by MainActivity, not here, because
+ *      a background OS notification-listener service may start this process
+ *      without launching a WebView and must never count as a WebView crash.
  */
 public class App extends Application {
 
@@ -67,7 +67,7 @@ public class App extends Application {
             }
         }
 
-        // 4. Crash tracker — bump on every cold start. Reset on successful WebView load.
-        CrashTracker.init(getApplicationContext());
+        // CrashTracker is intentionally NOT started from Application.onCreate:
+        // Android also invokes this for background push-listener service starts.
     }
 }

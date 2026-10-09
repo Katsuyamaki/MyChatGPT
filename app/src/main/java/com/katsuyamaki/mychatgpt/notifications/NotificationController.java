@@ -5,6 +5,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -12,6 +13,9 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.Settings;
 import android.util.Log;
 import com.katsuyamaki.mychatgpt.MainActivity;
 import com.katsuyamaki.mychatgpt.R;
@@ -20,6 +24,7 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.lang.ref.WeakReference;
 import java.util.regex.Pattern;
 
 /** Mirrors site notices to the Android shade and a durable local inbox. */
@@ -28,6 +33,12 @@ public final class NotificationController {
     private static final String CHANNEL = "chat_updates_v1";
     private static final String PREFS = "mychatgpt_notification_prefs";
     private static final String KEY_ENABLED = "android_enabled";
+    private static final String KEY_OS_SEEN_AT = "chatgpt_os_seen_at";
+    private static final String KEY_OS_SAVED_AT = "chatgpt_os_saved_at";
+    public static final String OFFICIAL_CHATGPT_PACKAGE = "com.openai.chatgpt";
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static WeakReference<Runnable> uiHistoryListener = new WeakReference<>(null);
+    private static volatile boolean osListenerConnected;
     public static final String ACTION_OPEN = "com.katsuyamaki.mychatgpt.OPEN_NOTIFICATION";
     public static final String EXTRA_ID = "notification_id";
     private static final Pattern CHAT_PATH =
@@ -53,6 +64,60 @@ public final class NotificationController {
             channel.setDescription("ChatGPT notices saved in MyChatGPT");
             manager.createNotificationChannel(channel);
         }
+    }
+
+    /** UI only: no Activity is retained by a notification listener service. */
+    public static synchronized void observeHistory(Runnable observer) {
+        uiHistoryListener = new WeakReference<>(observer);
+    }
+
+    public static void notifyHistoryChanged() {
+        Runnable observer;
+        synchronized (NotificationController.class) {
+            observer = uiHistoryListener.get();
+        }
+        if (observer == null) return;
+        if (Looper.myLooper() == Looper.getMainLooper()) observer.run();
+        else MAIN.post(observer);
+    }
+
+    public static void setOsListenerConnected(boolean connected) {
+        osListenerConnected = connected;
+        notifyHistoryChanged();
+    }
+
+    public boolean isOsListenerConnected() {
+        return osListenerConnected;
+    }
+
+    /** User-granted notification access, separate from POST_NOTIFICATIONS. */
+    public boolean hasOfficialPushMirrorAccess() {
+        try {
+            if (manager != null && Build.VERSION.SDK_INT >= 27) {
+                return manager.isNotificationListenerAccessGranted(new ComponentName(
+                        context, ChatGptNotificationListenerService.class));
+            }
+            String enabled = Settings.Secure.getString(context.getContentResolver(),
+                    "enabled_notification_listeners");
+            return enabled != null && enabled.contains(context.getPackageName() + "/");
+        } catch (Exception e) {
+            Log.w(TAG, "Could not query Android notification-listener access", e);
+            return false;
+        }
+    }
+
+    public long latestOfficialSeenAt() {
+        return prefs.getLong(KEY_OS_SEEN_AT, 0L);
+    }
+
+    public long latestOfficialSavedAt() {
+        return prefs.getLong(KEY_OS_SAVED_AT, 0L);
+    }
+
+    /** This is a diagnostic timestamp only, never the notification text. */
+    public void noteOfficialEventSeen() {
+        prefs.edit().putLong(KEY_OS_SEEN_AT, System.currentTimeMillis()).apply();
+        notifyHistoryChanged();
     }
 
     public boolean isAndroidEnabled() { return prefs.getBoolean(KEY_ENABLED, true); }
@@ -142,6 +207,43 @@ public final class NotificationController {
             }
         }
         return record("MyChatGPT popup", body, chatUrl, "app-toast");
+    }
+
+    /**
+     * Called only after the OS notification-listener service validates the
+     * source package. Android notifications can be posted while WebView is
+     * stopped. The digest uniquely identifies that OS posting/content;
+     * SQLite enforces dedup even across service/Activity restarts.
+     */
+    public long recordOfficialChatGptPush(String title, String text,
+                                          String candidateUrl, long postedAt,
+                                          String externalDigest, boolean replay) {
+        String cleanTitle = clean(title);
+        String cleanBody = clean(text);
+        if (cleanBody.isEmpty() && (cleanTitle.isEmpty()
+                || "ChatGPT".equalsIgnoreCase(cleanTitle))) return 0;
+        if (cleanTitle.isEmpty()) cleanTitle = "ChatGPT";
+        if (cleanBody.isEmpty()) cleanBody = cleanTitle;
+        if (externalDigest == null || externalDigest.length() != 64) return 0;
+        String url = safeChatUrl(candidateUrl);
+        long when = postedAt > 0 ? postedAt : System.currentTimeMillis();
+        try {
+            long id = store.addExternal(cleanTitle, cleanBody, url,
+                    "official-chatgpt", when, externalDigest);
+            if (id <= 0) return 0;
+            // Reconnected listeners archive outstanding notifications silently:
+            // only freshly posted events create another Android shade entry.
+            if (!replay && canPostAndroid()) {
+                postAndroid(id, "ChatGPT · " + cleanTitle, cleanBody, when);
+            }
+            prefs.edit().putLong(KEY_OS_SAVED_AT, System.currentTimeMillis()).apply();
+            notifyHistoryChanged();
+            return id;
+        } catch (Exception ex) {
+            // Never include private notification text in logs.
+            Log.e(TAG, "Official ChatGPT notification mirror failed", ex);
+            return 0;
+        }
     }
 
     public long recordTestNotification(String chatUrl) {
