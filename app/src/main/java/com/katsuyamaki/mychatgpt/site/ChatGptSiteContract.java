@@ -619,14 +619,16 @@ public final class ChatGptSiteContract {
      * intercept the user paste before the site/browser fallback, update the
      * active selection directly, then dispatch one input event so ChatGPT can
      * synchronize its editor state. Small pastes stay on the site's normal path.
-     * Keep the 2 KiB threshold and selection-replacement regression cases in
-     * sync with WEBSITE_SPECIFICS.md when changing this path.
+     * The production threshold is 768 characters based on owner-device evidence
+     * that the legacy path can stall around 800-900 characters. Keep threshold,
+     * selection-replacement, and multiline regression coverage in sync with
+     * WEBSITE_SPECIFICS.md when changing this path.
      */
     public static final String LARGE_PASTE_ACCELERATOR_JS =
             "(function(){try{" +
             "if(window.__mychatgptLargePaste)return;window.__mychatgptLargePaste=true;" +
             "if(window.top!==window)return;" +
-            "var LARGE_PASTE_MIN=2048;" +
+            "var LARGE_PASTE_MIN=768;" +
             "var handling=false;" +
             "function composer(el){try{" +
             "if(!el)return null;" +

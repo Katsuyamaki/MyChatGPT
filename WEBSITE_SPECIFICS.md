@@ -249,7 +249,7 @@ orders of magnitude slower when Chromium/site editing falls through
 `document.execCommand('insertText')`. The production workaround is
 main-frame only and deliberately narrow:
 
-- pastes below 2,048 characters stay on ChatGPT's normal path;
+- pastes below 768 characters stay on ChatGPT's normal path;
 - larger `paste` events are intercepted in capture phase, preserving the
   active selection/replacement range;
 - contenteditable text is inserted directly with a DOM `Range` (text
@@ -276,7 +276,10 @@ polls every 200 ms, **main frame only**, host-gated to `chatgpt.com` /
 `openai.com`, and calls `AndroidBridge.pageReady()` when the composer exists
 **and** one of: a visible page-ready marker (2.3), or the settle heuristic,
 with an 8 s hard cap. Java side (`onDomReady()`) then fades the loading
-overlay.
+overlay. The `AndroidBridge.pageReady()` callback must marshal onto the
+Activity UI thread **before** reading WebView URL/origin state; WebView getters
+are UI-thread-affine on Android, and gating them on the JavaScript bridge thread
+can reject a valid ready signal.
 
 This is the **misleading-full-load detection system** — chatgpt.com's
 WebView progress (and its `load` event) claim "fully loaded" while the SPA
@@ -718,13 +721,16 @@ series; most also have a comment at the relevant code site.
   tinting at the usage site. Same class of trap: don't rely on any
   `app:`-namespace attribute on plain framework views in this app's
   non-AppCompat activities.
-- **P18 — Avoid `execCommand('insertText')` for large composer pastes.**
-  On the tested Android WebView, multi-kilobyte inserts through that legacy
-  editing path stalled the JS/main thread for seconds, while direct
-  `Range` insertion plus one `input` event completed in milliseconds.
-  Keep the accelerator thresholded so ordinary small pastes retain the site's
-  native semantics, and preserve selection-replacement behavior in regression
-  tests.
+- **P18 — Avoid `execCommand('insertText')` for moderate/large composer pastes.**
+  On the tested Android WebView, both multi-kilobyte inserts and repeated
+  ~800–900-character Gboard pastes through that legacy editing path can stall
+  the JS/main thread for seconds, while direct `Range` insertion plus one
+  `input` event completes in milliseconds. The production boundary is 768
+  characters; smaller pastes retain the site's native path. Preserve
+  selection-replacement behavior in regression tests. A known accepted edge
+  case remains: multiline break preservation is not fully proven for the
+  accelerated path, so re-test multiline/code pastes after composer/site
+  changes.
 
 
 ### 4.6 Experiments that failed on chatgpt.com (do not re-attempt blindly)
