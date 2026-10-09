@@ -7,6 +7,10 @@ import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.content.Intent;
+import android.net.Uri;
+import android.provider.Settings;
+import android.text.TextUtils;
 import android.os.Build;
 import android.view.Gravity;
 import android.view.View;
@@ -16,12 +20,19 @@ import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.webkit.WebView;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.ScrollView;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.katsuyamaki.mychatgpt.R;
 import com.katsuyamaki.mychatgpt.site.ChatGptSiteContract;
+import com.katsuyamaki.mychatgpt.notifications.NotificationController;
+import com.katsuyamaki.mychatgpt.notifications.NotificationStore;
+
+import java.util.List;
 
 /**
  * Native MyChatGPT shell chrome layered around the main WebView.
@@ -55,10 +66,18 @@ public final class NativeShellController {
     private static final int CORNER_TOP_RIGHT = 1;
     private static final int CORNER_BOTTOM_RIGHT = 2;
     private static final int CORNER_BOTTOM_LEFT = 3;
+    private static final int PAGE_HOME = 0;
+    private static final int PAGE_TUNE = 1;
+    private static final int PAGE_NOTIFICATIONS = 2;
+    private static final int PAGE_SIZE = 30;
 
     public interface Host {
         WebView getMainWebView();
         void forceReloadCurrentChat();
+        NotificationController getNotificationController();
+        void openNotification(long id);
+        void requestNotificationPermission();
+        void sendTestNotification();
     }
 
     private final Activity activity;
@@ -68,7 +87,14 @@ public final class NativeShellController {
 
     private LinearLayout cluster;
     private LinearLayout panel;
-    private TextView tuneButton;
+    private FrameLayout menuButton;
+    private TextView unreadBadge;
+    private TextView headerTitle;
+    private TextView backButton;
+    private ScrollView pageScroll;
+    private LinearLayout pageContent;
+    private int currentPage = PAGE_HOME;
+    private int notificationOffset;
     private TextView backdropLabel;
     private TextView surfaceOpacityLabel;
     private TextView uiScaleLabel;
@@ -130,6 +156,7 @@ public final class NativeShellController {
     public void onConfigurationChanged() {
         configureWallpaperWindow();
         applyBackdrop();
+        updatePanelSize();
         updateClusterPlacement();
         applyToMainWebView(host.getMainWebView());
     }
@@ -151,7 +178,34 @@ public final class NativeShellController {
         }
         cluster = null;
         panel = null;
-        tuneButton = null;
+        menuButton = null;
+        unreadBadge = null;
+        pageScroll = null;
+        pageContent = null;
+        headerTitle = null;
+        backButton = null;
+    }
+
+    public void showNotificationsPage() {
+        if (panel == null) return;
+        notificationOffset = 0;
+        showPage(PAGE_NOTIFICATIONS);
+        panel.setVisibility(View.VISIBLE);
+    }
+
+    /** The unread counter and inbox stay in sync with newly captured site toasts. */
+    public void refreshNotifications() {
+        if (unreadBadge == null) return;
+        NotificationController notifications = host.getNotificationController();
+        int unread = notifications == null ? 0 : notifications.unreadCount();
+        unreadBadge.setVisibility(unread == 0 ? View.GONE : View.VISIBLE);
+        unreadBadge.setText(unread > 99 ? "99+" : Integer.toString(unread));
+        if (currentPage == PAGE_NOTIFICATIONS && panel != null
+                && panel.getVisibility() == View.VISIBLE) {
+            int previousScroll = pageScroll.getScrollY();
+            buildNotificationPage();
+            pageScroll.post(() -> pageScroll.scrollTo(0, previousScroll));
+        }
     }
 
     private void configureWallpaperWindow() {
@@ -188,50 +242,142 @@ public final class NativeShellController {
         cluster.setGravity(isRightCorner() ? Gravity.END : Gravity.START);
         cluster.setElevation(dp(16));
 
-        tuneButton = makeButton("TUNE");
-        LinearLayout.LayoutParams tuneParams =
-                new LinearLayout.LayoutParams(dp(68), dp(36));
-        tuneButton.setLayoutParams(tuneParams);
+        // Compact launcher: the application's own icon replaces the TUNE text.
+        menuButton = new FrameLayout(activity);
+        menuButton.setContentDescription("Open MyChatGPT menu");
+        menuButton.setBackground(makeRoundedBackground(
+                Color.argb(225, 30, 30, 30), 24));
+        menuButton.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
+        ImageView icon = new ImageView(activity);
+        icon.setImageResource(R.mipmap.ic_launcher);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        FrameLayout.LayoutParams iconParams = new FrameLayout.LayoutParams(
+                dp(42), dp(42), Gravity.CENTER);
+        menuButton.addView(icon, iconParams);
+        unreadBadge = makeButton("");
+        unreadBadge.setTextSize(9f);
+        unreadBadge.setBackground(makeRoundedBackground(Color.rgb(178, 40, 40), 10));
+        FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(
+                dp(21), dp(21), Gravity.TOP | Gravity.END);
+        badgeParams.topMargin = -dp(3);
+        badgeParams.rightMargin = -dp(3);
+        menuButton.addView(unreadBadge, badgeParams);
 
         panel = new LinearLayout(activity);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(12), dp(10), dp(12), dp(10));
+        panel.setPadding(dp(10), dp(10), dp(10), dp(10));
         panel.setBackground(makeRoundedBackground(
-                Color.argb(232, 24, 24, 24), 16));
+                Color.argb(244, 24, 24, 24), 16));
         panel.setVisibility(View.GONE);
-        int availableWidth = activity.getResources().getDisplayMetrics().widthPixels - dp(24);
-        int panelWidth = Math.min(dp(300), Math.max(dp(220), availableWidth));
-        panel.setLayoutParams(new LinearLayout.LayoutParams(
-                panelWidth, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        TextView title = makeLabel("MyChatGPT controls", 14f);
-        panel.addView(title);
+        LinearLayout header = new LinearLayout(activity);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        backButton = makeButton("BACK");
+        header.addView(backButton, new LinearLayout.LayoutParams(dp(56), dp(34)));
+        headerTitle = makeLabel("MyChatGPT", 15f);
+        headerTitle.setGravity(Gravity.CENTER_VERTICAL);
+        headerTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        titleParams.leftMargin = dp(8);
+        header.addView(headerTitle, titleParams);
+        TextView close = makeButton("×");
+        header.addView(close, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        panel.addView(header, fullWidthWrap());
 
+        pageScroll = new ScrollView(activity);
+        pageScroll.setFillViewport(false);
+        pageScroll.setVerticalScrollBarEnabled(true);
+        pageContent = new LinearLayout(activity);
+        pageContent.setOrientation(LinearLayout.VERTICAL);
+        pageContent.setPadding(dp(2), dp(8), dp(2), dp(4));
+        pageScroll.addView(pageContent);
+        panel.addView(pageScroll);
+
+        backButton.setOnClickListener(v -> showPage(PAGE_HOME));
+        close.setOnClickListener(v -> panel.setVisibility(View.GONE));
+        menuButton.setOnClickListener(v -> {
+            if (panel.getVisibility() == View.VISIBLE) {
+                panel.setVisibility(View.GONE);
+            } else {
+                showPage(PAGE_HOME);
+                panel.setVisibility(View.VISIBLE);
+            }
+        });
+
+        showPage(PAGE_HOME);
+        refreshNotifications();
+        reorderClusterChildren();
+        int insertIndex = Math.min(1, root.getChildCount());
+        root.addView(cluster, insertIndex);
+        updateClusterPlacement();
+    }
+
+    private void showPage(int page) {
+        if (pageContent == null) return;
+        currentPage = page;
+        pageContent.removeAllViews();
+        backdropLabel = null;
+        surfaceOpacityLabel = null;
+        uiScaleLabel = null;
+        textScaleLabel = null;
+        backButton.setVisibility(page == PAGE_HOME ? View.INVISIBLE : View.VISIBLE);
+        headerTitle.setText(page == PAGE_TUNE ? "Tune"
+                : page == PAGE_NOTIFICATIONS ? "Notifications" : "MyChatGPT");
+        if (page == PAGE_TUNE) buildTunePage();
+        else if (page == PAGE_NOTIFICATIONS) buildNotificationPage();
+        else buildHomePage();
+        updatePanelSize();
+        pageScroll.post(() -> pageScroll.scrollTo(0, 0));
+    }
+
+    private void buildHomePage() {
+        TextView intro = makeLabel("Choose a section", 12f);
+        intro.setPadding(dp(4), 0, 0, dp(10));
+        pageContent.addView(intro);
+
+        TextView tune = makeButton("TUNE  ·  Appearance and layout");
+        pageContent.addView(tune, fullWidthButton(45));
+        tune.setOnClickListener(v -> showPage(PAGE_TUNE));
+
+        NotificationController notifications = host.getNotificationController();
+        int unread = notifications == null ? 0 : notifications.unreadCount();
+        TextView inbox = makeButton("NOTIFICATIONS  ·  " + unread + " unread");
+        LinearLayout.LayoutParams inboxParams = fullWidthButton(45);
+        inboxParams.topMargin = dp(8);
+        pageContent.addView(inbox, inboxParams);
+        inbox.setOnClickListener(v -> {
+            notificationOffset = 0;
+            showPage(PAGE_NOTIFICATIONS);
+        });
+    }
+
+    private void buildTunePage() {
         backdropLabel = makeLabel("", 12f);
-        backdropLabel.setPadding(0, dp(6), 0, 0);
-        panel.addView(backdropLabel);
+        backdropLabel.setPadding(0, dp(4), 0, 0);
+        pageContent.addView(backdropLabel);
         SeekBar backdropSlider = new SeekBar(activity);
         backdropSlider.setMax(100);
         backdropSlider.setProgress(backdropPercent);
-        panel.addView(backdropSlider, fullWidthWrap());
+        pageContent.addView(backdropSlider, fullWidthWrap());
 
         surfaceOpacityLabel = makeLabel("", 12f);
-        panel.addView(surfaceOpacityLabel);
+        pageContent.addView(surfaceOpacityLabel);
         SeekBar opacitySlider = new SeekBar(activity);
         opacitySlider.setMax(100);
         opacitySlider.setProgress(surfaceOpacityPercent);
-        panel.addView(opacitySlider, fullWidthWrap());
+        pageContent.addView(opacitySlider, fullWidthWrap());
 
         uiScaleLabel = makeLabel("", 12f);
-        panel.addView(uiScaleLabel);
-        panel.addView(makeStepRow(
+        pageContent.addView(uiScaleLabel);
+        pageContent.addView(makeStepRow(
                 () -> setUiScale(uiScalePercent - UI_SCALE_STEP),
                 this::resetUiScale,
                 () -> setUiScale(uiScalePercent + UI_SCALE_STEP)));
 
         textScaleLabel = makeLabel("", 12f);
-        panel.addView(textScaleLabel);
-        panel.addView(makeStepRow(
+        pageContent.addView(textScaleLabel);
+        pageContent.addView(makeStepRow(
                 () -> setTextScale(textScalePercent - TEXT_SCALE_STEP),
                 this::resetTextScale,
                 () -> setTextScale(textScalePercent + TEXT_SCALE_STEP)));
@@ -239,70 +385,51 @@ public final class NativeShellController {
         LinearLayout actions = new LinearLayout(activity);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setPadding(0, dp(6), 0, 0);
-
         TextView move = makeButton("MOVE CORNER");
         TextView reload = makeButton("FORCE RELOAD");
-        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(
-                0, dp(38), 1f);
-        actions.addView(move, half);
-        LinearLayout.LayoutParams halfRight = new LinearLayout.LayoutParams(
-                0, dp(38), 1f);
-        halfRight.leftMargin = dp(6);
-        actions.addView(reload, halfRight);
-        panel.addView(actions, fullWidthWrap());
+        actions.addView(move, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, dp(38), 1f);
+        right.leftMargin = dp(6);
+        actions.addView(reload, right);
+        pageContent.addView(actions, fullWidthWrap());
 
-        TextView resetTransparency = makeButton("RESET TRANSPARENCY");
-        LinearLayout.LayoutParams resetParams =
-                new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
+        TextView reset = makeButton("RESET TRANSPARENCY");
+        LinearLayout.LayoutParams resetParams = fullWidthButton(38);
         resetParams.topMargin = dp(6);
-        panel.addView(resetTransparency, resetParams);
-
+        pageContent.addView(reset, resetParams);
         TextView hint = makeLabel(
-                "UI scale changes the whole page. Text size is independent.",
-                10f);
+                "UI scale changes the whole page. Text size is independent.", 10f);
         hint.setTextColor(Color.LTGRAY);
         hint.setPadding(0, dp(6), 0, 0);
-        panel.addView(hint);
-
-        tuneButton.setOnClickListener(v ->
-                panel.setVisibility(
-                        panel.getVisibility() == View.VISIBLE
-                                ? View.GONE : View.VISIBLE));
+        pageContent.addView(hint);
 
         backdropSlider.setOnSeekBarChangeListener(new SimpleSeekBarListener() {
-            @Override
-            public void onProgressChanged(
-                    SeekBar seekBar, int progress, boolean fromUser) {
+            @Override public void onProgressChanged(
+                    SeekBar bar, int value, boolean fromUser) {
                 if (!fromUser) return;
-                backdropPercent = progress;
-                prefs.edit().putInt(KEY_BACKDROP, backdropPercent).apply();
+                backdropPercent = value;
+                prefs.edit().putInt(KEY_BACKDROP, value).apply();
                 applyBackdrop();
                 updateLabels();
             }
         });
-
         opacitySlider.setOnSeekBarChangeListener(new SimpleSeekBarListener() {
-            @Override
-            public void onProgressChanged(
-                    SeekBar seekBar, int progress, boolean fromUser) {
+            @Override public void onProgressChanged(
+                    SeekBar bar, int value, boolean fromUser) {
                 if (!fromUser) return;
-                surfaceOpacityPercent = progress;
-                prefs.edit().putInt(KEY_SURFACE_OPACITY, surfaceOpacityPercent).apply();
+                surfaceOpacityPercent = value;
+                prefs.edit().putInt(KEY_SURFACE_OPACITY, value).apply();
                 applyBackdrop();
                 updateLabels();
             }
         });
-
         move.setOnClickListener(v -> cycleCorner());
-
         reload.setOnClickListener(v -> {
             panel.setVisibility(View.GONE);
             Toast.makeText(activity, "Refreshing current chat…", Toast.LENGTH_SHORT).show();
             host.forceReloadCurrentChat();
         });
-
-        resetTransparency.setOnClickListener(v -> {
+        reset.setOnClickListener(v -> {
             backdropPercent = DEFAULT_BACKDROP;
             surfaceOpacityPercent = DEFAULT_SURFACE_OPACITY;
             prefs.edit()
@@ -314,13 +441,175 @@ public final class NativeShellController {
             applyBackdrop();
             updateLabels();
         });
-
         updateLabels();
-        reorderClusterChildren();
+    }
 
-        int insertIndex = Math.min(1, root.getChildCount());
-        root.addView(cluster, insertIndex);
-        updateClusterPlacement();
+    private void buildNotificationPage() {
+        pageContent.removeAllViews();
+        NotificationController notifications = host.getNotificationController();
+        if (notifications == null) return;
+
+        String status = !notifications.isAndroidEnabled()
+                ? "Android alerts off · history still saved"
+                : notifications.needsPermission()
+                    ? "Android permission needed · history still saved"
+                    : notifications.canPostAndroid()
+                        ? "Android alerts on · history always saved"
+                        : "Android alerts blocked in system settings";
+        TextView state = makeLabel(status, 11f);
+        state.setPadding(dp(4), 0, dp(4), dp(9));
+        pageContent.addView(state);
+
+        TextView toggle = makeButton(
+                !notifications.isAndroidEnabled() ? "ENABLE ANDROID ALERTS"
+                : notifications.needsPermission() ? "GRANT NOTIFICATION ACCESS"
+                : "DISABLE ANDROID ALERTS");
+        pageContent.addView(toggle, fullWidthButton(40));
+        toggle.setOnClickListener(v -> {
+            if (!notifications.isAndroidEnabled()) {
+                notifications.setAndroidEnabled(true);
+                if (notifications.needsPermission()) host.requestNotificationPermission();
+            } else if (notifications.needsPermission()) {
+                host.requestNotificationPermission();
+            } else {
+                notifications.setAndroidEnabled(false);
+            }
+            refreshNotifications();
+        });
+
+        LinearLayout actions = new LinearLayout(activity);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView test = makeButton("SEND TEST");
+        TextView system = makeButton("ANDROID SETTINGS");
+        actions.addView(test, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        LinearLayout.LayoutParams sysParams = new LinearLayout.LayoutParams(0, dp(38), 1.2f);
+        sysParams.leftMargin = dp(6);
+        actions.addView(system, sysParams);
+        LinearLayout.LayoutParams actionParams = fullWidthWrap();
+        actionParams.topMargin = dp(6);
+        pageContent.addView(actions, actionParams);
+        test.setOnClickListener(v -> host.sendTestNotification());
+        system.setOnClickListener(v -> openAndroidNotificationSettings());
+
+        LinearLayout toolbar = new LinearLayout(activity);
+        toolbar.setOrientation(LinearLayout.HORIZONTAL);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        TextView history = makeLabel("History (" + notifications.totalCount() + ")", 13f);
+        history.setTypeface(null, android.graphics.Typeface.BOLD);
+        toolbar.addView(history, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        TextView clear = makeButton("CLEAR");
+        toolbar.addView(clear, new LinearLayout.LayoutParams(dp(65), dp(34)));
+        pageContent.addView(toolbar, fullWidthWrap());
+        clear.setOnClickListener(v -> new android.app.AlertDialog.Builder(activity)
+                .setTitle("Clear notification history?")
+                .setMessage("This removes saved notices and posted Android notices. It cannot be undone.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Clear", (dialog, which) -> {
+                    notifications.clearHistory();
+                    notificationOffset = 0;
+                    refreshNotifications();
+                }).show());
+
+        int total = notifications.totalCount();
+        if (total == 0) {
+            TextView empty = makeLabel(
+                    "No notifications yet. Site popups captured while MyChatGPT is open appear here.",
+                    12f);
+            empty.setPadding(dp(4), dp(8), dp(4), dp(10));
+            pageContent.addView(empty);
+            return;
+        }
+        if (notificationOffset >= total) notificationOffset = Math.max(0, total - PAGE_SIZE);
+        List<NotificationStore.Entry> entries =
+                notifications.recent(PAGE_SIZE, notificationOffset);
+        for (NotificationStore.Entry item : entries) {
+            LinearLayout row = new LinearLayout(activity);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(9), dp(8), dp(9), dp(8));
+            row.setBackground(makeRoundedBackground(
+                    Color.argb(item.isUnread() ? 215 : 135, 54, 54, 54), 10));
+            TextView title = makeLabel((item.isUnread() ? "●  " : "")
+                    + item.title, 12f);
+            title.setTypeface(null, android.graphics.Typeface.BOLD);
+            row.addView(title);
+            TextView time = makeLabel(
+                    NotificationController.formatTimestamp(item.createdAt), 10f);
+            time.setTextColor(Color.LTGRAY);
+            row.addView(time);
+            TextView body = makeLabel(item.body, 12f);
+            body.setMaxLines(3);
+            body.setEllipsize(TextUtils.TruncateAt.END);
+            body.setPadding(0, dp(4), 0, dp(2));
+            row.addView(body);
+            TextView link = makeLabel(
+                    item.chatUrl == null
+                            ? "No chat link provided" : "Tap to open conversation", 10f);
+            link.setTextColor(0xFFA8D4FF);
+            row.addView(link);
+            LinearLayout.LayoutParams itemParams = fullWidthWrap();
+            itemParams.bottomMargin = dp(7);
+            pageContent.addView(row, itemParams);
+            row.setOnClickListener(v -> host.openNotification(item.id));
+        }
+        LinearLayout pager = new LinearLayout(activity);
+        pager.setOrientation(LinearLayout.HORIZONTAL);
+        TextView newer = makeButton("NEWER");
+        newer.setAlpha(notificationOffset == 0 ? 0.45f : 1f);
+        newer.setEnabled(notificationOffset > 0);
+        TextView older = makeButton("OLDER");
+        older.setAlpha(notificationOffset + PAGE_SIZE >= total ? 0.45f : 1f);
+        older.setEnabled(notificationOffset + PAGE_SIZE < total);
+        pager.addView(newer, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        LinearLayout.LayoutParams olderParams = new LinearLayout.LayoutParams(0, dp(38), 1f);
+        olderParams.leftMargin = dp(6);
+        pager.addView(older, olderParams);
+        pageContent.addView(pager, fullWidthWrap());
+        newer.setOnClickListener(v -> {
+            notificationOffset = Math.max(0, notificationOffset - PAGE_SIZE);
+            showPage(PAGE_NOTIFICATIONS);
+        });
+        older.setOnClickListener(v -> {
+            notificationOffset += PAGE_SIZE;
+            showPage(PAGE_NOTIFICATIONS);
+        });
+    }
+
+    private void openAndroidNotificationSettings() {
+        try {
+            Intent intent;
+            if (Build.VERSION.SDK_INT >= 26) {
+                intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                intent.putExtra(Settings.EXTRA_APP_PACKAGE, activity.getPackageName());
+            } else {
+                intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + activity.getPackageName()));
+            }
+            activity.startActivity(intent);
+        } catch (Exception e) {
+            Toast.makeText(activity, "Cannot open Android settings",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private LinearLayout.LayoutParams fullWidthButton(int heightDp) {
+        return new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(heightDp));
+    }
+
+    private void updatePanelSize() {
+        if (panel == null || pageScroll == null) return;
+        int screenWidth = activity.getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = activity.getResources().getDisplayMetrics().heightPixels;
+        int width = Math.min(dp(310), Math.max(dp(180),
+                screenWidth - insetLeft - insetRight - dp(24)));
+        panel.setLayoutParams(new LinearLayout.LayoutParams(
+                width, ViewGroup.LayoutParams.WRAP_CONTENT));
+        int desired = currentPage == PAGE_HOME ? dp(142)
+                : currentPage == PAGE_TUNE ? dp(365) : dp(400);
+        int available = Math.max(dp(110),
+                screenHeight - insetTop - insetBottom - dp(130));
+        pageScroll.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.min(desired, available)));
     }
 
     private LinearLayout makeStepRow(
@@ -452,7 +741,7 @@ public final class NativeShellController {
     }
 
     private void reorderClusterChildren() {
-        if (cluster == null || panel == null || tuneButton == null) return;
+        if (cluster == null || panel == null || menuButton == null) return;
         int panelVisibility = panel.getVisibility();
         cluster.removeAllViews();
 
@@ -461,13 +750,13 @@ public final class NativeShellController {
         if (bottom) {
             cluster.addView(panel);
             LinearLayout.LayoutParams gap =
-                    (LinearLayout.LayoutParams) tuneButton.getLayoutParams();
+                    (LinearLayout.LayoutParams) menuButton.getLayoutParams();
             gap.topMargin = dp(6);
             gap.bottomMargin = 0;
-            tuneButton.setLayoutParams(gap);
-            cluster.addView(tuneButton);
+            menuButton.setLayoutParams(gap);
+            cluster.addView(menuButton);
         } else {
-            cluster.addView(tuneButton);
+            cluster.addView(menuButton);
             LinearLayout.LayoutParams panelParams =
                     (LinearLayout.LayoutParams) panel.getLayoutParams();
             panelParams.topMargin = dp(6);

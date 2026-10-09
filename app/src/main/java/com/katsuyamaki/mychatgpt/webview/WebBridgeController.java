@@ -23,6 +23,7 @@ public final class WebBridgeController {
     public interface Host {
         WebView getMainWebView();
         void onPageReady();
+        void onSiteNotification(String text, String candidateUrl);
     }
 
     private final Activity activity;
@@ -78,6 +79,19 @@ public final class WebBridgeController {
      * navigator.share text fallback. The site provides its own copied UI, so
      * this intentionally writes the clipboard without an additional toast.
      */
+    /**
+     * Site toast bridge. Only the primary ChatGPT document may emit inbox items;
+     * popup/iframe copies of AndroidBridge are never accepted.
+     */
+    @JavascriptInterface
+    public void siteNotification(final String text, final String candidateUrl) {
+        activity.runOnUiThread(() -> {
+            if (hostWebView != host.getMainWebView()) return;
+            if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
+            host.onSiteNotification(text, candidateUrl);
+        });
+    }
+
     @JavascriptInterface
     public void copyToClipboard(final String text) {
         if (!hostAllowed()) return;

@@ -1,0 +1,184 @@
+package com.katsuyamaki.mychatgpt.notifications;
+
+import android.Manifest;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.SystemClock;
+import android.util.Log;
+import com.katsuyamaki.mychatgpt.MainActivity;
+import com.katsuyamaki.mychatgpt.R;
+import java.text.DateFormat;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Pattern;
+
+/** Mirrors site notices to the Android shade and a durable local inbox. */
+public final class NotificationController {
+    private static final String TAG = "MyChatGPTNotifications";
+    private static final String CHANNEL = "chat_updates_v1";
+    private static final String PREFS = "mychatgpt_notification_prefs";
+    private static final String KEY_ENABLED = "android_enabled";
+    public static final String ACTION_OPEN = "com.katsuyamaki.mychatgpt.OPEN_NOTIFICATION";
+    public static final String EXTRA_ID = "notification_id";
+    private static final Pattern CHAT_PATH =
+            Pattern.compile("(?:^|/)c/[A-Za-z0-9-]{8,128}(?:/|$)");
+    private final Context context;
+    private final NotificationManager manager;
+    private final NotificationStore store;
+    private final SharedPreferences prefs;
+    private final Map<String, Long> recentKeys = new LinkedHashMap<>();
+
+    public NotificationController(Context context) {
+        this.context = context.getApplicationContext();
+        manager = (NotificationManager) this.context.getSystemService(Context.NOTIFICATION_SERVICE);
+        store = new NotificationStore(this.context);
+        prefs = this.context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (manager != null && Build.VERSION.SDK_INT >= 26) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL, "ChatGPT updates", NotificationManager.IMPORTANCE_DEFAULT);
+            channel.setDescription("ChatGPT notices saved in MyChatGPT");
+            manager.createNotificationChannel(channel);
+        }
+    }
+
+    public boolean isAndroidEnabled() { return prefs.getBoolean(KEY_ENABLED, true); }
+    public void setAndroidEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_ENABLED, enabled).apply();
+    }
+    public boolean needsPermission() {
+        return Build.VERSION.SDK_INT >= 33
+                && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED;
+    }
+    public boolean canPostAndroid() {
+        if (!isAndroidEnabled() || needsPermission() || manager == null) return false;
+        if (Build.VERSION.SDK_INT >= 24 && !manager.areNotificationsEnabled()) return false;
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationChannel channel = manager.getNotificationChannel(CHANNEL);
+            return channel != null && channel.getImportance() != NotificationManager.IMPORTANCE_NONE;
+        }
+        return true;
+    }
+
+    public long recordSiteNotification(String text, String candidateUrl) {
+        String body = clean(text);
+        if (body.isEmpty()) return 0;
+        String chatUrl = safeChatUrl(candidateUrl);
+        long now = SystemClock.elapsedRealtime();
+        String key = body + "|" + chatUrl;
+        synchronized (recentKeys) {
+            Long prev = recentKeys.get(key);
+            if (prev != null && now >= prev && now - prev < 10000) return 0;
+            recentKeys.put(key, now);
+            if (recentKeys.size() > 40) {
+                recentKeys.remove(recentKeys.keySet().iterator().next());
+            }
+        }
+        return record("ChatGPT update", body, chatUrl, "site");
+    }
+
+    public long recordTestNotification(String chatUrl) {
+        return record("MyChatGPT test", "Android notification and history are working.",
+                safeChatUrl(chatUrl), "test");
+    }
+    private long record(String title, String body, String chatUrl, String source) {
+        long when = System.currentTimeMillis();
+        try {
+            long id = store.add(title, body, chatUrl, source, when);
+            if (canPostAndroid()) postAndroid(id, title, body, when);
+            return id;
+        } catch (Exception ex) {
+            // Do not put private notification text in logcat.
+            Log.e(TAG, "Notification persistence failed", ex);
+            return 0;
+        }
+    }
+    public List<NotificationStore.Entry> recent(int limit) { return store.recent(limit); }
+    public List<NotificationStore.Entry> recent(int limit, int offset) {
+        return store.recent(limit, offset);
+    }
+    public int totalCount() { return store.totalCount(); }
+    public NotificationStore.Entry find(long id) { return id > 0 ? store.find(id) : null; }
+    public int unreadCount() { return store.unreadCount(); }
+    public void markRead(long id) {
+        if (id <= 0) return;
+        store.markRead(id);
+        if (manager != null) manager.cancel(notificationId(id));
+    }
+    public void clearHistory() {
+        store.clear();
+        if (manager != null) manager.cancelAll();
+    }
+    public void close() { store.close(); }
+
+    public static String formatTimestamp(long millis) {
+        return DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                .format(new Date(millis));
+    }
+
+    /** Only explicit conversation routes on chatgpt.com can be opened. */
+    public static String safeChatUrl(String candidate) {
+        if (candidate == null || candidate.length() > 1200) return null;
+        try {
+            Uri uri = Uri.parse(candidate);
+            if (!"https".equalsIgnoreCase(uri.getScheme())
+                    || !"chatgpt.com".equalsIgnoreCase(uri.getHost())
+                    || uri.getPort() != -1) return null;
+            String path = uri.getPath();
+            if (path == null || !CHAT_PATH.matcher(path).find()) return null;
+            return uri.buildUpon().clearQuery().fragment(null).build().toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void postAndroid(long id, String title, String body, long when) {
+        try {
+            Intent intent = new Intent(context, MainActivity.class)
+                    .setAction(ACTION_OPEN)
+                    .setData(Uri.parse("mychatgpt://notification/" + id))
+                    .putExtra(EXTRA_ID, id)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT
+                    | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
+            PendingIntent pending = PendingIntent.getActivity(
+                    context, notificationId(id), intent, flags);
+            String time = formatTimestamp(when);
+            Notification.Builder builder = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(context, CHANNEL)
+                    : new Notification.Builder(context);
+            builder.setSmallIcon(R.drawable.ic_notification)
+                    .setContentTitle(title)
+                    .setContentText(time + " - " + body)
+                    .setStyle(new Notification.BigTextStyle().bigText(time + "\n" + body))
+                    .setWhen(when).setShowWhen(true)
+                    .setContentIntent(pending).setAutoCancel(true)
+                    .setVisibility(Notification.VISIBILITY_PRIVATE)
+                    .setCategory(Notification.CATEGORY_STATUS)
+                    .setPriority(Notification.PRIORITY_DEFAULT);
+            manager.notify(notificationId(id), builder.build());
+        } catch (SecurityException e) {
+            Log.w(TAG, "Notification permission denied");
+        } catch (Exception e) {
+            Log.e(TAG, "Posting native notification failed", e);
+        }
+    }
+    private static int notificationId(long id) { return (int) (id % Integer.MAX_VALUE); }
+    private static String clean(String text) {
+        if (text == null) return "";
+        String value = text.replaceAll("\\s+", " ").trim();
+        return value.length() <= 480 ? value : value.substring(0, 480).trim();
+    }
+}
