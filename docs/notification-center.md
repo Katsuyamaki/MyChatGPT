@@ -53,6 +53,61 @@ uninstalls or app-data wipes. Android 13+ requires user consent via
 `POST_NOTIFICATIONS`; the Notifications page requests it on demand.
 A blocked notification channel can be reopened from Android settings.
 
+## First-party-free website capture v3 (foreground)
+
+**This is the preferred mode for the reported failure.** MyChatGPT no
+longer needs the official Android app to notice a response finishing
+**while the ChatGPT WebView is active**.
+
+Two independent sources feed the existing `NotificationController`:
+
+1. **Web UI flash observer:** watches live DOM additions, text, ARIA state,
+   and—critically—`class`, `style`, and `hidden` changes that the older
+   listener ignored. It recognizes conventional toasts and compact floating
+   cards even without toast IDs, roles or ARIA labels. It excludes chat
+   transcript turns and compose/input areas. It does not need Notification
+   Access for another Android app.
+2. **Response-finished state observer:** watches the site’s actual generation
+   controls (stop/streaming indicators) and the final assistant reply/action
+   controls. A reply is recorded only after a **previously observed generation**
+   finishes and remains stable. New page loads containing historical completed
+   replies do not create events. Manual Stop and recognized errors are
+   suppressed. No response text is transmitted by this path: only an
+   explicit conversation URL and non-content turn identifier. The native side
+   fingerprints them for persistent deduplication.
+
+The WebView sends events through the pre-existing JavaScript-to-Java bridge,
+then the native controller stores a timestamped SQLite row and posts the
+Android notification (if permission and channel are enabled). Dismissing the
+Android notification leaves history intact.
+
+### Testing without official ChatGPT Android notifications
+
+1. Install the latest feature branch, open a conversation, and verify
+   **Site popup listener: ACTIVE**. Leave companion Notification Access off.
+2. **SEND TEST** validates only history/Android output.
+3. **TEST SITE POPUP CAPTURE** inserts a marked mock toast.
+4. **TEST UNMARKED POPUP** inserts a temporary floating card **without**
+   any toast/ARIA metadata, testing the generic visual-popup recognition.
+5. Ask ChatGPT for a real answer. While it generates, the Notifications page
+   should show a generation count increase. After it finishes, the
+   **completions** count and **ChatGPT response complete** history row should
+   increase. Click the row to return to that conversation.
+6. If a genuine on-screen toast appears, **Popup candidates** and **forwarded**
+   should increase, generating a `ChatGPT update` history row.
+7. If a genuine flash still goes missing, choose **COPY CAPTURE COUNTERS**
+   and share the text (counts only, no conversation content). A zero popup
+   candidate count with an ACTIVE listener tells us the visible surface is not
+   matched or not part of the DOM observed; generations/completions counters
+   separately diagnose the response-state path.
+
+**Boundary:** Android WebView is paused by MyChatGPT when backgrounded to
+avoid needless battery use, and Android may kill the process. This direct
+website path does not provide guaranteed offline/background push. On resume
+a still-live generation may become observable again, but events missed
+during process death cannot be reconstructed. The companion Android relay
+is separate, optional, and still requires the official app.
+
 ## Real push relay (official ChatGPT app, opt-in)
 
 **Important:** There is no independently authenticated ChatGPT push feed in
@@ -84,6 +139,9 @@ Access.
    the corresponding **ChatGPT** history entry and MyChatGPT Android notice.
 5. Swipe away the Android notification; the MyChatGPT history entry must
    remain. Relaunch MyChatGPT and verify the history persists.
+
+This Android companion relay is **optional** and is not required for the
+foreground direct completion or popup detection.
 
 The listener immediately filters by exact package
 `com.openai.chatgpt` **before reading notification text or extras**. Other
@@ -126,10 +184,11 @@ The previous popup watcher only matched a small set of toast elements and waited
 170 ms before checking them. Some transient website notices appeared/disappeared
 or changed visibility/text before the watcher could capture them.
 
-The updated main-document watcher now observes text insertions and relevant
-state/ARIA attribute changes, captures with an initial 30 ms delay, retries
-temporarily hidden/empty candidates, and recognizes Sonner, Radix, Toastify,
-ARIA status/alert regions and notification-like popup cards. It excludes
+The latest main-document watcher also observes CSS class/style
+transitions and generic floating cards without marker attributes, handles
+late text, and tries to catch very short-lived UI elements immediately.
+The independent response-state observer generates a completion record even
+if no popup appears. It excludes
 conversation turns, composer fields, dialogs and navigation areas to avoid
 logging normal chat content. The original Android posting/SQLite storage and
 chat-routing code remains intact.

@@ -355,6 +355,16 @@ public class MainActivity extends Activity {
                     public void testSiteCapture() {
                         MainActivity.this.testSiteCapture();
                     }
+
+                    @Override
+                    public void testUnmarkedCapture() {
+                        MainActivity.this.testUnmarkedCapture();
+                    }
+
+                    @Override
+                    public void copyMonitorDiagnostics() {
+                        MainActivity.this.copyMonitorDiagnostics();
+                    }
                 });
         loadingStateController.initializePresentation();
         NotificationController.observeHistory(notificationHistoryChanged);
@@ -508,6 +518,41 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Simulates the site's unlabeled, animated notification card. */
+    private void testUnmarkedCapture() {
+        if (webview == null || !ChatGptSiteContract.isChatGptWebUrl(webview.getUrl())) {
+            Toast.makeText(this, "Open ChatGPT to test popup capture",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        webview.evaluateJavascript(SiteNotificationMonitor.PROBE_UNMARKED_SCRIPT, result -> {
+            if (!"true".equals(result)) {
+                Toast.makeText(MainActivity.this,
+                        "Popup detector is unavailable. Reload ChatGPT.",
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /** Structural counters only; no chat text, titles or popup bodies. */
+    private void copyMonitorDiagnostics() {
+        if (notificationController == null) return;
+        try {
+            android.content.ClipboardManager clipboard =
+                    (android.content.ClipboardManager)
+                    getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                        "MyChatGPT capture counters",
+                        notificationController.siteMonitorDiagnostics()));
+                Toast.makeText(this, "Capture diagnostics copied",
+                        Toast.LENGTH_SHORT).show();
+            }
+        } catch (Exception ex) {
+            Log.w(TAG, "Could not copy sanitized popup counters", ex);
+        }
+    }
+
     @Override
     protected void onStop() {
         super.onStop();
@@ -538,10 +583,35 @@ public class MainActivity extends Activity {
                     @Override
                     public void onSiteMonitorReady() {
                         if (notificationController != null) {
+                            boolean wasActive = notificationController.isSiteMonitorActive();
                             notificationController.siteMonitorReady();
+                            if (!wasActive && nativeShellController != null) {
+                                nativeShellController.refreshNotifications();
+                            }
                         }
-                        if (nativeShellController != null) {
+                    }
+
+                    @Override
+                    public void onSiteMonitorMetrics(int mutations, int candidates,
+                                                     int floating, int sent,
+                                                     int generating, int completed) {
+                        if (notificationController != null
+                                && notificationController.updateSiteMonitorMetrics(
+                                        mutations, candidates, floating, sent,
+                                        generating, completed)
+                                && nativeShellController != null) {
                             nativeShellController.refreshNotifications();
+                        }
+                    }
+
+                    @Override
+                    public void onChatResponseCompleted(String url, String turnKey) {
+                        if (notificationController != null) {
+                            long id = notificationController.recordResponseCompletion(
+                                    url, turnKey);
+                            if (id > 0 && nativeShellController != null) {
+                                nativeShellController.refreshNotifications();
+                            }
                         }
                     }
 

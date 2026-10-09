@@ -1,277 +1,452 @@
 (function () {
   'use strict';
-
-  // The native bridge is exposed to all WebView frames, but the site observer
-  // only runs in the top-level ChatGPT document.
+  // Only the top-level ChatGPT document can report real site events.
   try {
     if (window.self !== window.top) return;
-    var hostname = (location.hostname || '').toLowerCase();
-    if (hostname !== 'chatgpt.com' && !hostname.endsWith('.chatgpt.com')) return;
+    var host = (location.hostname || '').toLowerCase();
+    if (host !== 'chatgpt.com' && !host.endsWith('.chatgpt.com')) return;
 
-    var previous = window.__mychatgptSiteNotificationMonitor;
-    if (previous && previous.version === 2 && previous.active) {
-      previous.scan();
-      previous.report();
+    var older = window.__mychatgptSiteNotificationMonitor;
+    if (older && older.version === 3 && older.active) {
+      older.scan();
+      older.report(true);
       return;
     }
+    if (older && typeof older.disconnect === 'function') older.disconnect();
 
     var STRONG = [
       '[data-sonner-toast]', '[data-hot-toast]', '.Toastify__toast',
-      '[data-radix-toast]', '[data-slot="toast"]', '[data-slot="toast-item"]',
+      '[data-radix-toast]', '[data-slot="toast"]',
+      '[data-slot="toast-item"]', '[data-notification-toast]',
       '[data-testid*="toast" i]', '[data-testid*="snackbar" i]',
-      '[data-testid*="notification-toast" i]',
-      '[data-notification-toast]', '[role="alertdialog"][data-state="open"]'
+      '[class*="toast" i]', '[class*="snackbar" i]'
     ].join(',');
     var SEMANTIC = '[role="alert"],[role="status"],[aria-live="assertive"],[aria-live="polite"]';
-    var BLOCKED = [
-      '[data-testid^="conversation-turn"]', '#prompt-textarea',
-      '[data-testid*="composer" i]', '[contenteditable="true"]',
-      'textarea', 'input', 'nav', '[role="navigation"]',
-      '[role="dialog"]', '[aria-modal="true"]',
-      '[data-testid*="notification-center" i]'
+    var CHAT = [
+      '[data-testid^="conversation-turn-"]',
+      '[data-message-author-role]', '[data-turn="assistant"]', '[data-turn="user"]',
+      '#prompt-textarea', '[contenteditable="true"]', 'textarea', 'input',
+      '[role="log"]', 'nav', '[role="navigation"]', '[role="tooltip"]'
+    ].join(',');
+    var STOP = [
+      'button[data-testid="stop-button"]',
+      'button[aria-label="Stop generating"]',
+      'button[aria-label="Stop response"]',
+      'button[aria-label="回答を停止"]', 'button[aria-label="停止"]'
+    ].join(',');
+    var STREAM = '[data-is-streaming="true"],[data-stream-active="true"]';
+    var ASSISTANT = '[data-message-author-role="assistant"],[data-turn="assistant"]';
+    var FINISHED = [
+      'button[data-testid="copy-turn-action-button"]',
+      'button[aria-label="Copy response"]', 'button[aria-label="Regenerate response"]',
+      '[data-markdown-copy]'
     ].join(',');
     var pending = new Map();
     var delivered = new WeakMap();
-    var timer = 0;
-    var observer = null;
-    var monitor = { version: 2, active: false };
+    var timer = 0, stateTimer = 0, pulseAt = 0, lastText = '';
+    var stats = { mutations: 0, candidates: 0, floating: 0, sent: 0,
+                  generating: 0, completed: 0 };
+    var observer;
+    var response = { active: false, route: '', since: 0, finishing: 0,
+                     interrupted: false, generation: 0, lastStop: 0 };
+    var monitor = { version: 3, active: false };
 
     function bridge() { return window.AndroidBridge; }
-    function report() {
+    function report(force) {
       try {
-        var target = bridge();
-        if (target && target.siteMonitorReady) target.siteMonitorReady();
+        var b = bridge();
+        if (!b) return;
+        if (b.siteMonitorReady) b.siteMonitorReady();
+        if (b.siteMonitorMetrics && (force || Date.now() - pulseAt > 1900)) {
+          pulseAt = Date.now();
+          b.siteMonitorMetrics(stats.mutations, stats.candidates,
+                               stats.floating, stats.sent,
+                               stats.generating, stats.completed);
+        }
       } catch (ignored) {}
     }
     monitor.report = report;
-
-    function metadata(el) {
-      var a = '';
-      try {
-        a = [el.id || '', el.className || '',
-             el.getAttribute('data-testid') || '',
-             el.getAttribute('data-slot') || '',
-             el.getAttribute('aria-label') || ''].join(' ').toLowerCase();
-      } catch (ignored) {}
-      return a.slice(0, 350);
+    function shortText(el, max) {
+      if (!el) return '';
+      var s = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      return s.length >= 3 && s.length <= max ? s : '';
     }
-    function namedToast(el) {
+    function visible(el) {
+      if (!el || !el.isConnected) return false;
+      if (!el.getClientRects().length) return false;
+      var r = el.getBoundingClientRect();
+      if (r.width < 14 || r.height < 8 || r.bottom < 0 || r.top > innerHeight) return false;
+      if (r.height > Math.max(245, innerHeight * 0.60)) return false;
+      var css = getComputedStyle(el);
+      if (css.display === 'none' || css.visibility === 'hidden') return false;
+      if (Number(css.opacity) === 0) return false;
+      if (el.closest('[aria-hidden="true"],[hidden]')) return false;
+      return true;
+    }
+    function blocked(el) {
+      return !!(el && el.closest && el.closest(CHAT));
+    }
+    function metadata(el) {
+      if (!el) return '';
+      return [el.id || '', typeof el.className === 'string' ? el.className : '',
+              el.getAttribute('data-testid') || '', el.getAttribute('data-slot') || '',
+              el.getAttribute('aria-label') || ''].join(' ').slice(0, 300).toLowerCase();
+    }
+    function named(el) {
       return /toast|snackbar|flash[-_ ]?message|notification[-_ ]?(?:toast|banner|message|popup)|alert[-_ ]?banner/.test(metadata(el));
     }
-    function excluded(el) {
-      try {
-        return !!(el.closest && el.closest(BLOCKED));
-      } catch (ignored) { return true; }
+    function nearEdge(r) {
+      return r.top < innerHeight * 0.38 || r.bottom > innerHeight * 0.62;
     }
-    function isStrong(el) {
-      try { return !!(el.matches && el.matches(STRONG)); }
-      catch (ignored) { return false; }
+    function compact(el, max) {
+      if (!visible(el) || blocked(el)) return false;
+      var r = el.getBoundingClientRect();
+      return r.width <= innerWidth * 1.04 && r.height < Math.min(260, innerHeight * 0.54)
+          && nearEdge(r) && !!shortText(el, max)
+          && !el.querySelector('textarea,input,[contenteditable="true"]');
     }
-    function smallVisible(el) {
-      if (!el || !el.isConnected || excluded(el)) return false;
-      var bounds = el.getBoundingClientRect();
-      if (bounds.width < 15 || bounds.height < 8) return false;
-      if (bounds.height > Math.max(240, innerHeight * 0.58)) return false;
-      if (bounds.width > innerWidth * 1.03) return false;
-      if (bounds.bottom < 0 || bounds.top > innerHeight) return false;
-      var css = getComputedStyle(el);
-      return css.display !== 'none' && css.visibility !== 'hidden'
-        && parseFloat(css.opacity || '1') > 0.02;
-    }
-    function textOf(el) {
-      var value = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-      return value.length >= 3 && value.length <= 1200 ? value : '';
-    }
-    function anchoredToCorner(el) {
-      var element = el;
-      for (var depth = 0; element && depth < 5; depth++, element = element.parentElement) {
-        var css = getComputedStyle(element);
-        if (css.position === 'fixed' || css.position === 'sticky') {
-          var r = el.getBoundingClientRect();
-          return r.top < innerHeight * 0.4 || r.bottom > innerHeight * 0.6;
+    function floatingCandidate(el) {
+      if (!el || !el.isConnected || blocked(el)) return null;
+      var chain = [];
+      for (var a = el, n = 0; a && n < 8; a = a.parentElement, n++) {
+        if (a === document.body || a === document.documentElement || a.tagName === 'MAIN') break;
+        if (blocked(a)) return null;
+        chain.push(a);
+      }
+      var floating = -1;
+      for (var i = 0; i < chain.length; i++) {
+        var style = getComputedStyle(chain[i]);
+        var z = parseInt(style.zIndex, 10);
+        if (style.position === 'fixed' || style.position === 'sticky' ||
+            (style.position === 'absolute' && isFinite(z) && z >= 15)) {
+          floating = i;
+          break;
         }
       }
-      return false;
+      if (floating < 0) return null;
+      // Pick a small text-bearing card under a floating portal, not the
+      // fullscreen portal itself. This catches unlabeled ChatGPT popups.
+      var choice = null;
+      for (var j = 0; j <= floating; j++) {
+        var candidate = chain[j], css = getComputedStyle(candidate);
+        if (!compact(candidate, 380)) continue;
+        var skin = css.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
+                   css.backgroundColor !== 'transparent';
+        var shadow = css.boxShadow && css.boxShadow !== 'none';
+        var cls = metadata(candidate);
+        if (!skin && !shadow && !/rounded|border|shadow|pointer-events-auto/.test(cls)) continue;
+        if (candidate.closest('[role="dialog"],[aria-modal="true"]') &&
+            !named(candidate)) continue;
+        if (candidate.matches('button,[role="button"],[role="menu"],[role="menuitem"]')) continue;
+        choice = candidate;
+      }
+      return choice;
     }
-
-    // Match explicit toast markup first. For framework-specific popups, use
-    // semantic status regions and notification-like cards, not the whole page.
-    function candidate(node) {
-      var el = node && node.nodeType === 1 ? node : node && node.parentElement;
-      if (!el || excluded(el)) return null;
+    function match(el) {
+      if (!el || !el.closest || blocked(el)) return null;
       try {
         var direct = el.closest(STRONG);
-        if (direct) return direct;
-        var current = el;
-        for (var depth = 0; current && depth < 7; depth++, current = current.parentElement) {
-          if (current === document.body || current === document.documentElement) break;
-          if (namedToast(current)) return current;
-          var role = current.getAttribute('role');
-          if (role === 'alert' || role === 'status') return current;
-          if ((current.getAttribute('aria-live') === 'polite' ||
-               current.getAttribute('aria-live') === 'assertive')) {
-            // Avoid recording an entire persistent live-region stack. Prefer
-            // the newly inserted toast card directly underneath that region.
-            var card = el;
-            while (card.parentElement && card.parentElement !== current) {
-              card = card.parentElement;
+        if (direct && !blocked(direct)) return { el: direct, kind: 'marked' };
+        for (var node = el, depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+          if (node === document.body || node === document.documentElement) break;
+          if (named(node)) return { el: node, kind: 'named' };
+          var role = node.getAttribute('role');
+          if (role === 'alert' || role === 'status') return { el: node, kind: 'semantic' };
+          var live = node.getAttribute('aria-live');
+          if (live === 'assertive' || live === 'polite') {
+            var child = el;
+            while (child.parentElement && child.parentElement !== node) {
+              child = child.parentElement;
             }
-            if (card !== current && card !== el && card.nodeType === 1) return card;
-            if (anchoredToCorner(current)) return current;
+            if (child !== node && compact(child, 420))
+              return { el: child, kind: 'semantic' };
+            if (compact(node, 420)) return { el: node, kind: 'semantic' };
           }
         }
-        // Some sites give no accessibility role to popup cards. Require both
-        // ephemeral-looking metadata and a floating visual position.
-        if (namedToast(el) && anchoredToCorner(el)) return el;
+        var unmarked = floatingCandidate(el);
+        if (unmarked) return { el: unmarked, kind: 'floating' };
       } catch (ignored) {}
       return null;
     }
-
-    function enqueue(el) {
-      if (!el || el.nodeType !== 1 || excluded(el)) return;
-      if (!pending.has(el)) pending.set(el, 0);
-      if (!timer) timer = setTimeout(flush, 30);
+    function enqueue(hit) {
+      if (!hit || !hit.el || blocked(hit.el)) return;
+      if (!pending.has(hit.el)) {
+        pending.set(hit.el, { tries: 0, kind: hit.kind });
+        stats.candidates++;
+        if (hit.kind === 'floating') stats.floating++;
+      }
+      if (!timer) timer = setTimeout(flush, 0);
     }
-
-    function inspect(node, searchDescendants) {
+    function inspect(node, deep) {
       var el = node && node.nodeType === 1 ? node : node && node.parentElement;
-      if (!el) return;
-      var match = candidate(el);
-      if (match) enqueue(match);
-      if (!searchDescendants || !el.querySelectorAll) return;
+      if (!el || blocked(el)) return;
+      var found = match(el);
+      if (found) enqueue(found);
+      if (!deep || !el.querySelectorAll) return;
       try {
-        var direct = el.querySelectorAll(STRONG + ',' + SEMANTIC);
-        for (var i = 0; i < direct.length && i < 28; i++) {
-          var found = candidate(direct[i]);
-          if (found) enqueue(found);
+        var matches = el.querySelectorAll(STRONG + ',' + SEMANTIC);
+        for (var i = 0; i < matches.length && i < 28; i++) {
+          var candidate = match(matches[i]);
+          if (candidate) enqueue(candidate);
         }
       } catch (ignored) {}
     }
-
+    function destination(el) {
+      var a = el.querySelector('a[href*="/c/"]');
+      if (a && a.href) return a.href;
+      return /(?:^|\/)c\/[A-Za-z0-9-]{8,128}(?:\/|$)/.test(location.pathname)
+           ? location.href : '';
+    }
     function flush() {
       timer = 0;
-      var again = false;
-      pending.forEach(function (tries, el) {
+      var retry = false;
+      pending.forEach(function (state, el) {
         pending.delete(el);
         try {
           if (!el.isConnected) return;
-          if (!smallVisible(el)) {
-            if (tries < 8) { pending.set(el, tries + 1); again = true; }
+          var ok = compact(el, state.kind === 'floating' ? 380 : 1200);
+          if (ok && state.kind === 'semantic') {
+            var r = el.getBoundingClientRect();
+            // A persistent status line can be anywhere on the page; a toast
+            // must be in a compact floating region or near the viewport edge.
+            ok = nearEdge(r) && (floatingCandidate(el) ||
+                 !!el.closest('[data-sonner-toaster],[data-hot-toast]') ||
+                 named(el) || getComputedStyle(el).position === 'fixed');
+          }
+          if (ok && state.kind === 'floating') {
+            ok = !!floatingCandidate(el);
+          }
+          var text = ok ? shortText(el, state.kind === 'floating' ? 380 : 1200) : '';
+          if (!text && state.tries < 10) {
+            state.tries++;
+            pending.set(el, state);
+            retry = true;
             return;
           }
-          var value = textOf(el);
-          if (!value) {
-            if (tries < 8) { pending.set(el, tries + 1); again = true; }
-            return;
-          }
-          var isToast = isStrong(el) || namedToast(el);
-          var role = el.getAttribute('role');
-          var semantic = role === 'status' || role === 'alert' ||
-              el.getAttribute('aria-live') === 'polite' ||
-              el.getAttribute('aria-live') === 'assertive';
-          // The weak semantic match must look like a short-lived floating
-          // popup, not a persistent form validation or chat status message.
-          if (!isToast && !(semantic && anchoredToCorner(el))) return;
-          if (el.querySelector('textarea,input,[contenteditable="true"]')) return;
+          if (!text || /^(loading|working|thinking)\s*(?:\.{1,3}|…)?$/i.test(text)) return;
           var old = delivered.get(el);
-          if (old && (old.text === value || old.count >= 2 ||
-              Date.now() - old.at < 1600)) return;
-
-          // Some frameworks show an intermediate "loading" toast on the same
-          // node. Give it a short chance to resolve to the useful final notice.
-          var type = (el.getAttribute('data-type') || '').toLowerCase();
-          if (type === 'loading' && tries < 7) {
-            pending.set(el, tries + 1);
-            again = true;
+          if (old && (old.text === text || old.count >= 2 ||
+                      Date.now() - old.at < 1200)) return;
+          var b = bridge();
+          if (!b || !b.siteNotification) {
+            if (state.tries++ < 10) {
+              pending.set(el, state);
+              retry = true;
+            }
             return;
           }
-
-          var anchor = el.querySelector('a[href*="/c/"]');
-          var url = anchor && anchor.href ? anchor.href : '';
-          if (!url && /(?:^|\/)c\/[A-Za-z0-9-]{8,128}(?:\/|$)/.test(location.pathname)) {
-            url = location.href;
-          }
-          var target = bridge();
-          if (!target || !target.siteNotification) {
-            if (tries < 8) { pending.set(el, tries + 1); again = true; }
-            return;
-          }
-          target.siteNotification(value, url);
-          delivered.set(el, { text: value, at: Date.now(),
-              count: old ? old.count + 1 : 1 });
+          delivered.set(el, { text: text, count: old ? old.count + 1 : 1, at: Date.now() });
+          b.siteNotification(text, destination(el));
+          stats.sent++;
+          report(true);
         } catch (ignored) {}
       });
-      if (again && !timer) timer = setTimeout(flush, 140);
+      if (retry && !timer) timer = setTimeout(flush, 65);
     }
-
     function scan() {
       try {
         var nodes = document.querySelectorAll(STRONG + ',' + SEMANTIC);
-        for (var i = 0; i < nodes.length && i < 60; i++) {
-          var match = candidate(nodes[i]);
-          if (match) enqueue(match);
+        for (var i = 0; i < nodes.length && i < 90; i++) {
+          var h = match(nodes[i]);
+          if (h) enqueue(h);
         }
       } catch (ignored) {}
+      scheduleState();
     }
     monitor.scan = scan;
 
-    // Unlike SEND TEST (which starts in Java), this test enters through the
-    // page's real MutationObserver -> Java bridge -> SQLite -> Android path.
-    monitor.probe = function () {
+    function route() {
+      return /(?:^|\/)c\/[A-Za-z0-9-]{8,128}(?:\/|$)/.test(location.pathname)
+             ? location.origin + location.pathname : '';
+    }
+    function isRendered(el) {
+      if (!el || !el.isConnected || !el.getClientRects().length) return false;
+      var style = getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    }
+    function main() {
+      return document.querySelector('main');
+    }
+    function signals() {
+      var root = main();
+      if (!root) return { busy: false, assistant: null, ready: false, error: false };
+      var active = root.querySelectorAll(STOP + ',' + STREAM);
+      var busy = false;
+      for (var i = 0; i < active.length; i++) {
+        if (isRendered(active[i])) { busy = true; break; }
+      }
+      var assistant = root.querySelectorAll(ASSISTANT);
+      var last = assistant.length ? assistant[assistant.length - 1] : null;
+      var parent = last && (last.closest('[data-testid^="conversation-turn-"],article[data-turn-id]') || last);
+      var finalControl = parent && parent.querySelector(FINISHED);
+      var ready = !!(last && isRendered(last) &&
+                     ((finalControl && isRendered(finalControl)) ||
+                       ((last.getAttribute('data-message-id') ||
+                         parent.getAttribute('data-turn-id')) &&
+                        shortText(last, 100000))));
+      // Some layouts use a request timeline rather than conversation turns.
+      if (!last) {
+        var timeline = root.querySelectorAll('[data-markdown-copy],button[aria-label="Regenerate response"]');
+        ready = !busy && !!timeline.length && isRendered(timeline[timeline.length - 1]);
+      }
+      var errors = root.querySelectorAll('[role="alert"]');
+      var error = false;
+      for (var j = 0; j < errors.length; j++) {
+        if (isRendered(errors[j]) &&
+            /something went wrong|error generating|network error|try again/i.test(
+              (errors[j].textContent || '').slice(0, 150))) {
+          error = true;
+          break;
+        }
+      }
+      var identity = last && (
+        last.getAttribute('data-message-id') ||
+        (parent && parent.getAttribute('data-turn-id')) ||
+        (parent && parent.getAttribute('data-testid'))) || '';
+      identity = String(identity).slice(0, 150);
+      return { busy: busy, assistant: last, ready: ready, error: error, identity: identity };
+    }
+    function scheduleState() {
+      if (!stateTimer) stateTimer = setTimeout(checkState, 125);
+    }
+    function checkState() {
+      stateTimer = 0;
+      var current = route(), signal = signals(), now = Date.now();
+      if (current !== response.route) {
+        response.route = current;
+        response.active = false;
+        response.finishing = 0;
+        response.interrupted = false;
+      }
+      if (!current) return;
+      if (signal.busy) {
+        if (!response.active) {
+          response.active = true;
+          response.since = now;
+          response.finishing = 0;
+          response.interrupted = false;
+          response.generation++;
+          stats.generating++;
+          report(true);
+        } else {
+          response.finishing = 0;
+        }
+        return;
+      }
+      if (!response.active) return;
+      if (response.interrupted || now - response.lastStop < 12000) {
+        response.active = false;
+        response.finishing = 0;
+        return;
+      }
+      if (!response.finishing) response.finishing = now;
+      if (now - response.finishing < 1250) {
+        if (!stateTimer) stateTimer = setTimeout(checkState, 1350);
+        return;
+      }
+      if (!signal.ready && !signal.assistant) {
+        if (now - response.finishing < 5500) {
+          stateTimer = setTimeout(checkState, 850);
+        } else {
+          response.active = false;
+        }
+        return;
+      }
+      if (!signal.ready || signal.error || now - response.since < 250) {
+        response.active = false;
+        return;
+      }
+      response.active = false;
+      response.finishing = 0;
+      var b = bridge();
+      if (b && b.chatResponseCompleted) {
+        // No conversation or assistant text leaves the web page; only the
+        // validated route and a non-content identifier go to Android.
+        var key = signal.identity || ('session-' + now + '-' + response.generation);
+        b.chatResponseCompleted(current, key);
+        stats.completed++;
+        report(true);
+      }
+    }
+    function onStopClick(e) {
+      var target = e.target;
+      var stop = target && target.closest && target.closest(STOP);
+      if (stop) {
+        response.interrupted = true;
+        response.lastStop = Date.now();
+        setTimeout(scheduleState, 500);
+      }
+    }
+
+    function synthetic(marked) {
       if (!document.body) return false;
       var el = document.createElement('div');
-      el.setAttribute('data-sonner-toast', '');
-      el.setAttribute('role', 'status');
-      el.textContent = 'MyChatGPT site capture test: ' + new Date().toLocaleTimeString();
-      el.style.cssText = 'position:fixed;top:16px;left:12px;right:12px;z-index:2147483647;'
-        + 'padding:14px;color:white;background:#263340;border-radius:12px;'
-        + 'font:13px sans-serif;box-shadow:0 4px 12px #0005';
+      if (marked) {
+        el.setAttribute('data-sonner-toast', '');
+        el.setAttribute('role', 'status');
+      }
+      el.textContent = marked
+        ? 'MyChatGPT site capture test: ' + new Date().toLocaleTimeString()
+        : 'MyChatGPT unmarked capture test: ' + new Date().toLocaleTimeString();
+      el.style.cssText = 'position:fixed;top:14px;left:12px;right:12px;z-index:2147483647;'
+          + 'padding:14px;color:white;background:#263340;border-radius:12px;'
+          + 'font:13px sans-serif;box-shadow:0 4px 12px #0005';
       document.body.appendChild(el);
-      setTimeout(function () { try { el.remove(); } catch (ignored) {} }, 2400);
+      setTimeout(function () { try { el.remove(); } catch (ignored) {} }, 2600);
       return true;
-    };
+    }
+    monitor.probe = function () { return synthetic(true); };
+    monitor.probeUnmarked = function () { return synthetic(false); };
 
     observer = new MutationObserver(function (records) {
-      // Process newest mutations first: streaming chat replies can produce
-      // large mutation batches, and a newly arrived toast must not be starved.
-      var checked = 0;
-      for (var i = records.length - 1; i >= 0 && checked < 220; i--, checked++) {
-        var mutation = records[i];
-        if (mutation.type === 'characterData') {
-          inspect(mutation.target, false);
-        } else if (mutation.type === 'attributes') {
-          inspect(mutation.target, false);
-        } else {
-          inspect(mutation.target, false);
-          var nodes = mutation.addedNodes;
-          for (var j = 0; j < nodes.length && j < 24; j++) {
-            inspect(nodes[j], true);
+      stats.mutations += records.length;
+      // Recent mutations are most useful during high-frequency streaming.
+      var seen = 0;
+      for (var i = records.length - 1; i >= 0 && seen < 260; i--, seen++) {
+        var r = records[i];
+        inspect(r.target, false);
+        if (r.type === 'childList') {
+          for (var j = 0; j < r.addedNodes.length && j < 28; j++) {
+            inspect(r.addedNodes[j], true);
           }
         }
       }
+      scheduleState();
+      if (Date.now() - pulseAt > 2400) report(false);
     });
     observer.observe(document, {
-      subtree: true, childList: true, characterData: true,
+      childList: true, subtree: true, characterData: true,
       attributes: true,
-      attributeFilter: ['role', 'aria-live', 'data-state', 'data-visible',
-                        'data-testid', 'data-slot', 'data-sonner-toast']
+      // Previous listener missed CSS-only show/hide animation transitions.
+      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'aria-live',
+                        'role', 'data-state', 'data-visible', 'data-testid',
+                        'data-slot', 'data-sonner-toast', 'data-is-streaming',
+                        'data-stream-active']
     });
+    document.addEventListener('click', onStopClick, true);
+    document.addEventListener('visibilitychange', scheduleState);
     monitor.active = true;
     monitor.disconnect = function () {
       monitor.active = false;
+      observer.disconnect();
+      document.removeEventListener('click', onStopClick, true);
+      document.removeEventListener('visibilitychange', scheduleState);
       if (timer) clearTimeout(timer);
-      if (observer) observer.disconnect();
+      if (stateTimer) clearTimeout(stateTimer);
+      pending.clear();
     };
     window.__mychatgptSiteNotificationMonitor = monitor;
-    report();
+    report(true);
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', scan, { once: true });
-    } else {
-      scan();
-    }
+    } else scan();
+    // A state/control can change without a DOM mutation after CSS transitions.
+    var periodic = setInterval(function () {
+      if (!monitor.active) { clearInterval(periodic); return; }
+      checkState();
+    }, 1600);
   } catch (failure) {
-    // Reset the sentinel so onPageFinished can retry if document-start ran
-    // before the WebView had a usable document or bridge.
+    // The onPageFinished fallback can retry if document-start had no body.
     try { delete window.__mychatgptSiteNotificationMonitor; } catch (ignored) {}
   }
 })();

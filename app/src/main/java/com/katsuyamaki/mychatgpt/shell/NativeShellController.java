@@ -79,6 +79,8 @@ public final class NativeShellController {
         void requestNotificationPermission();
         void sendTestNotification();
         void testSiteCapture();
+        void testUnmarkedCapture();
+        void copyMonitorDiagnostics();
     }
 
     private final Activity activity;
@@ -461,14 +463,20 @@ public final class NativeShellController {
         state.setPadding(dp(4), 0, dp(4), dp(9));
         pageContent.addView(state);
 
+        TextView webHeading = makeLabel(
+                "CHATGPT WEBVIEW · NO OTHER APP REQUIRED", 11f);
+        webHeading.setTypeface(null, android.graphics.Typeface.BOLD);
+        webHeading.setPadding(dp(4), dp(5), dp(4), dp(3));
+        pageContent.addView(webHeading);
+
         // INPUT, not output: the tests below create local notifications; this
         // Android listener is the source for real official ChatGPT pushes.
         boolean listenerAccess = notifications.hasOfficialPushMirrorAccess();
         String sourceStatus = !listenerAccess
-                ? "Official ChatGPT push: ACCESS NEEDED"
+                ? "Optional companion push: not connected"
                 : notifications.isOsListenerConnected()
-                    ? "Official ChatGPT push: LISTENING"
-                    : "Official ChatGPT push: access granted, connecting";
+                    ? "Optional companion push: listening"
+                    : "Optional companion push: connecting";
         TextView pushStatus = makeLabel(sourceStatus, 12f);
         pushStatus.setTypeface(null, android.graphics.Typeface.BOLD);
         pushStatus.setTextColor(listenerAccess ? 0xFFAFE8D0 : 0xFFFFD5A0);
@@ -508,11 +516,15 @@ public final class NativeShellController {
                 ? "Site popup listener: ACTIVE"
                 : "Site popup listener: waiting for ChatGPT";
         TextView monitor = makeLabel(watcher
-                + "  ·  Real captures: " + notifications.siteCapturesThisSession(), 11f);
+                + "  ·  Real popups: " + notifications.siteCapturesThisSession()
+                + "  ·  Completed replies: " + notifications.completionsRecordedThisSession(), 11f);
         monitor.setTextColor(notifications.isSiteMonitorActive()
                 ? 0xFFAFE8D0 : Color.LTGRAY);
         monitor.setPadding(dp(4), 0, dp(4), dp(9));
         pageContent.addView(monitor);
+        TextView captureStats = makeLabel(notifications.siteMonitorSummary(), 10f);
+        captureStats.setPadding(dp(4), 0, dp(4), dp(9));
+        pageContent.addView(captureStats);
 
         TextView toggle = makeButton(
                 !notifications.isAndroidEnabled() ? "ENABLE ANDROID ALERTS"
@@ -551,6 +563,19 @@ public final class NativeShellController {
         probeParams.bottomMargin = dp(4);
         pageContent.addView(webProbe, probeParams);
         webProbe.setOnClickListener(v -> host.testSiteCapture());
+
+        TextView genericProbe = makeButton("TEST UNMARKED POPUP");
+        LinearLayout.LayoutParams genericParams = fullWidthButton(38);
+        genericParams.topMargin = dp(5);
+        pageContent.addView(genericProbe, genericParams);
+        genericProbe.setOnClickListener(v -> host.testUnmarkedCapture());
+
+        TextView diagnostics = makeButton("COPY CAPTURE COUNTERS");
+        LinearLayout.LayoutParams diagParams = fullWidthButton(34);
+        diagParams.topMargin = dp(5);
+        diagParams.bottomMargin = dp(5);
+        pageContent.addView(diagnostics, diagParams);
+        diagnostics.setOnClickListener(v -> host.copyMonitorDiagnostics());
 
         LinearLayout toolbar = new LinearLayout(activity);
         toolbar.setOrientation(LinearLayout.HORIZONTAL);

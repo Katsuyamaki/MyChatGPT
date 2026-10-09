@@ -25,6 +25,9 @@ public final class WebBridgeController {
         void onPageReady();
         void onSiteNotification(String text, String candidateUrl);
         void onSiteMonitorReady();
+        void onSiteMonitorMetrics(int mutations, int candidates, int floating,
+                                  int sent, int generating, int completed);
+        void onChatResponseCompleted(String url, String turnKey);
     }
 
     private final Activity activity;
@@ -99,6 +102,29 @@ public final class WebBridgeController {
             if (hostWebView != host.getMainWebView()) return;
             if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
             host.onSiteNotification(text, candidateUrl);
+        });
+    }
+
+    /** Counters only: no page or conversation text is transported. */
+    @JavascriptInterface
+    public void siteMonitorMetrics(final int mutations, final int candidates,
+                                   final int floating, final int sent,
+                                   final int generating, final int completed) {
+        activity.runOnUiThread(() -> {
+            if (hostWebView != host.getMainWebView()) return;
+            if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
+            host.onSiteMonitorMetrics(mutations, candidates, floating,
+                                      sent, generating, completed);
+        });
+    }
+
+    /** Stable per-turn completion state, not the assistant response body. */
+    @JavascriptInterface
+    public void chatResponseCompleted(final String url, final String turnKey) {
+        activity.runOnUiThread(() -> {
+            if (hostWebView != host.getMainWebView()) return;
+            if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
+            host.onChatResponseCompleted(url, turnKey);
         });
     }
 

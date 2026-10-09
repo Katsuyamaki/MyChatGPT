@@ -47,4 +47,9 @@ public final class SiteNotificationMonitor {
     public static final String PROBE_SCRIPT =
             "(function(){try{var m=window.__mychatgptSiteNotificationMonitor;"
             + "return !!(m&&m.active&&m.probe());}catch(e){return false;}})();";
+    /** Tests capture of visible floating cards with NO toast/ARIA marker. */
+    public static final String PROBE_UNMARKED_SCRIPT =
+            "(function(){try{var m=window.__mychatgptSiteNotificationMonitor;"
+            + "return !!(m&&m.active&&m.probeUnmarked());}"
+            + "catch(e){return false;}})();";
 }

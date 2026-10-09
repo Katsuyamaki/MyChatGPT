@@ -20,6 +20,8 @@ import android.util.Log;
 import com.katsuyamaki.mychatgpt.MainActivity;
 import com.katsuyamaki.mychatgpt.R;
 import java.text.DateFormat;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,6 +54,14 @@ public final class NotificationController {
     private int siteCapturesThisSession;
     private int siteProbeCapturesThisSession;
     private long latestSiteCaptureAt;
+    private int sitePopupCandidates;
+    private int siteUnmarkedCandidates;
+    private int sitePopupForwarded;
+    private int siteGenerationSignals;
+    private int siteCompletionSignals;
+    private int siteMutationsObserved;
+    private int completionsRecordedThisSession;
+    private long latestCompletionAt;
 
     public NotificationController(Context context) {
         this.context = context.getApplicationContext();
@@ -146,6 +156,62 @@ public final class NotificationController {
 
     public void resetSiteMonitor() {
         siteMonitorActive = false;
+        sitePopupCandidates = 0;
+        siteUnmarkedCandidates = 0;
+        sitePopupForwarded = 0;
+        siteGenerationSignals = 0;
+        siteCompletionSignals = 0;
+        siteMutationsObserved = 0;
+    }
+
+    /** Counters contain no conversation or popup text. */
+    public boolean updateSiteMonitorMetrics(int mutations, int candidates,
+                                            int unmarked, int forwarded,
+                                            int generating, int completed) {
+        int oldCandidates = sitePopupCandidates;
+        int oldUnmarked = siteUnmarkedCandidates;
+        int oldSent = sitePopupForwarded;
+        int oldGenerating = siteGenerationSignals;
+        int oldCompleted = siteCompletionSignals;
+        siteMutationsObserved = Math.max(0, mutations);
+        sitePopupCandidates = Math.max(0, candidates);
+        siteUnmarkedCandidates = Math.max(0, unmarked);
+        sitePopupForwarded = Math.max(0, forwarded);
+        siteGenerationSignals = Math.max(0, generating);
+        siteCompletionSignals = Math.max(0, completed);
+        return sitePopupCandidates != oldCandidates
+                || siteUnmarkedCandidates != oldUnmarked
+                || sitePopupForwarded != oldSent
+                || siteGenerationSignals != oldGenerating
+                || siteCompletionSignals != oldCompleted;
+    }
+
+    public String siteMonitorSummary() {
+        return "Popup candidates: " + sitePopupCandidates
+                + " (unmarked " + siteUnmarkedCandidates + ")"
+                + " · forwarded " + sitePopupForwarded
+                + " · generations " + siteGenerationSignals
+                + " · completions " + siteCompletionSignals;
+    }
+
+    public String siteMonitorDiagnostics() {
+        return "Listener active: " + siteMonitorActive + "\n"
+                + "Mutation records: " + siteMutationsObserved + "\n"
+                + "Popup candidates: " + sitePopupCandidates + "\n"
+                + "Unmarked floating candidates: " + siteUnmarkedCandidates + "\n"
+                + "Web popup events forwarded: " + sitePopupForwarded + "\n"
+                + "Generation starts: " + siteGenerationSignals + "\n"
+                + "Completion signals forwarded: " + siteCompletionSignals + "\n"
+                + "Real popups saved this session: " + siteCapturesThisSession + "\n"
+                + "Response completions saved this session: " + completionsRecordedThisSession;
+    }
+
+    public int completionsRecordedThisSession() {
+        return completionsRecordedThisSession;
+    }
+
+    public long latestCompletionAt() {
+        return latestCompletionAt;
     }
 
     public boolean isSiteMonitorActive() {
@@ -178,7 +244,8 @@ public final class NotificationController {
                 recentKeys.remove(recentKeys.keySet().iterator().next());
             }
         }
-        boolean probe = body.startsWith("MyChatGPT site capture test:");
+        boolean probe = body.startsWith("MyChatGPT site capture test:")
+                || body.startsWith("MyChatGPT unmarked capture test:");
         long id = record(probe ? "MyChatGPT capture test" : "ChatGPT update",
                 body, chatUrl, probe ? "site-test" : "site");
         if (id > 0) {
@@ -187,6 +254,50 @@ public final class NotificationController {
             latestSiteCaptureAt = System.currentTimeMillis();
         }
         return id;
+    }
+
+    /**
+     * Independent chat-completion signal: no toast selector or official Android
+     * app required. The page emits this only after seeing a generation in
+     * progress and then a stable, finished assistant reply.
+     *
+     * Store uses an external-key SHA-256 digest of the route/opaque turn ID,
+     * so a WebView reload cannot duplicate the same completion. No message
+     * text is transferred from the page.
+     */
+    public long recordResponseCompletion(String conversation, String turnKey) {
+        String url = safeChatUrl(conversation);
+        if (url == null || turnKey == null || turnKey.length() < 3
+                || turnKey.length() > 160) return 0;
+        try {
+            String fingerprint = sha256("response-complete\n" + url + "\n" + turnKey);
+            String title = "ChatGPT response complete";
+            String body = "A reply is ready in your conversation.";
+            long when = System.currentTimeMillis();
+            long id = store.addExternal(title, body, url, "completion",
+                    when, fingerprint);
+            if (id <= 0) return 0;
+            completionsRecordedThisSession++;
+            latestCompletionAt = when;
+            if (canPostAndroid()) postAndroid(id, title, body, when);
+            notifyHistoryChanged();
+            return id;
+        } catch (Exception ex) {
+            Log.e(TAG, "Could not save response completion", ex);
+            return 0;
+        }
+    }
+
+    private static String sha256(String input) throws Exception {
+        byte[] bytes = MessageDigest.getInstance("SHA-256")
+                .digest(input.getBytes(StandardCharsets.UTF_8));
+        char[] digits = "0123456789abcdef".toCharArray();
+        StringBuilder out = new StringBuilder(64);
+        for (byte b : bytes) {
+            out.append(digits[(b >>> 4) & 0x0F]);
+            out.append(digits[b & 0x0F]);
+        }
+        return out.toString();
     }
 
     /** Existing native Android Toasts also become durable, timestamped entries. */
