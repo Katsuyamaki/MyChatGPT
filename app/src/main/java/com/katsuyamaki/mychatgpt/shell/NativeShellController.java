@@ -469,49 +469,6 @@ public final class NativeShellController {
         webHeading.setPadding(dp(4), dp(5), dp(4), dp(3));
         pageContent.addView(webHeading);
 
-        // INPUT, not output: the tests below create local notifications; this
-        // Android listener is the source for real official ChatGPT pushes.
-        boolean listenerAccess = notifications.hasOfficialPushMirrorAccess();
-        String sourceStatus = !listenerAccess
-                ? "Optional companion push: not connected"
-                : notifications.isOsListenerConnected()
-                    ? "Optional companion push: listening"
-                    : "Optional companion push: connecting";
-        TextView pushStatus = makeLabel(sourceStatus, 12f);
-        pushStatus.setTypeface(null, android.graphics.Typeface.BOLD);
-        pushStatus.setTextColor(listenerAccess ? 0xFFAFE8D0 : 0xFFFFD5A0);
-        pushStatus.setPadding(dp(4), 0, dp(4), dp(7));
-        pageContent.addView(pushStatus);
-
-        long seen = notifications.latestOfficialSeenAt();
-        long saved = notifications.latestOfficialSavedAt();
-        TextView sourceActivity = makeLabel(
-                "Last official event: " + (seen == 0 ? "none"
-                        : NotificationController.formatTimestamp(seen))
-                + "  ·  Last saved: " + (saved == 0 ? "none"
-                        : NotificationController.formatTimestamp(saved)), 10f);
-        sourceActivity.setPadding(dp(4), 0, dp(4), dp(6));
-        pageContent.addView(sourceActivity);
-
-        TextView sourceHelp = makeLabel(
-                "Requires official ChatGPT app alerts ON. Android Notification "
-                + "Access can read all app alerts; MyChatGPT only processes "
-                + "ChatGPT's package. Both apps may show an Android alert.", 10f);
-        sourceHelp.setPadding(dp(4), 0, dp(4), dp(9));
-        pageContent.addView(sourceHelp);
-
-        TextView access = makeButton(listenerAccess
-                ? "MANAGE MIRROR ACCESS" : "GRANT MIRROR ACCESS");
-        pageContent.addView(access, fullWidthButton(38));
-        access.setOnClickListener(v -> openNotificationListenerSettings());
-
-        TextView officialSettings = makeButton("CHATGPT APP ALERT SETTINGS");
-        LinearLayout.LayoutParams nativeSettingsParams = fullWidthButton(36);
-        nativeSettingsParams.topMargin = dp(5);
-        nativeSettingsParams.bottomMargin = dp(10);
-        pageContent.addView(officialSettings, nativeSettingsParams);
-        officialSettings.setOnClickListener(v -> openOfficialChatGptNotificationSettings());
-
         String watcher = notifications.isSiteMonitorActive()
                 ? "Site popup listener: ACTIVE"
                 : "Site popup listener: waiting for ChatGPT";
@@ -576,6 +533,54 @@ public final class NativeShellController {
         diagParams.bottomMargin = dp(5);
         pageContent.addView(diagnostics, diagParams);
         diagnostics.setOnClickListener(v -> host.copyMonitorDiagnostics());
+
+        TextView companionHeading = makeLabel("OPTIONAL OFFICIAL-APP MIRROR", 11f);
+        companionHeading.setTypeface(null, android.graphics.Typeface.BOLD);
+        companionHeading.setPadding(dp(4), dp(12), dp(4), dp(4));
+        pageContent.addView(companionHeading);
+
+        // INPUT, not output: the tests below create local notifications; this
+        // Android listener is the source for real official ChatGPT pushes.
+        boolean listenerAccess = notifications.hasOfficialPushMirrorAccess();
+        String sourceStatus = !listenerAccess
+                ? "Optional companion push: not connected"
+                : notifications.isOsListenerConnected()
+                    ? "Optional companion push: listening"
+                    : "Optional companion push: connecting";
+        TextView pushStatus = makeLabel(sourceStatus, 12f);
+        pushStatus.setTypeface(null, android.graphics.Typeface.BOLD);
+        pushStatus.setTextColor(listenerAccess ? 0xFFAFE8D0 : 0xFFFFD5A0);
+        pushStatus.setPadding(dp(4), 0, dp(4), dp(7));
+        pageContent.addView(pushStatus);
+
+        long seen = notifications.latestOfficialSeenAt();
+        long saved = notifications.latestOfficialSavedAt();
+        TextView sourceActivity = makeLabel(
+                "Last official event: " + (seen == 0 ? "none"
+                        : NotificationController.formatTimestamp(seen))
+                + "  ·  Last saved: " + (saved == 0 ? "none"
+                        : NotificationController.formatTimestamp(saved)), 10f);
+        sourceActivity.setPadding(dp(4), 0, dp(4), dp(6));
+        pageContent.addView(sourceActivity);
+
+        TextView sourceHelp = makeLabel(
+                "Requires official ChatGPT app alerts ON. Android Notification "
+                + "Access can read all app alerts; MyChatGPT only processes "
+                + "ChatGPT's package. Both apps may show an Android alert.", 10f);
+        sourceHelp.setPadding(dp(4), 0, dp(4), dp(9));
+        pageContent.addView(sourceHelp);
+
+        TextView access = makeButton(listenerAccess
+                ? "MANAGE MIRROR ACCESS" : "GRANT MIRROR ACCESS");
+        pageContent.addView(access, fullWidthButton(38));
+        access.setOnClickListener(v -> openNotificationListenerSettings());
+
+        TextView officialSettings = makeButton("CHATGPT APP ALERT SETTINGS");
+        LinearLayout.LayoutParams nativeSettingsParams = fullWidthButton(36);
+        nativeSettingsParams.topMargin = dp(5);
+        nativeSettingsParams.bottomMargin = dp(10);
+        pageContent.addView(officialSettings, nativeSettingsParams);
+        officialSettings.setOnClickListener(v -> openOfficialChatGptNotificationSettings());
 
         LinearLayout toolbar = new LinearLayout(activity);
         toolbar.setOrientation(LinearLayout.HORIZONTAL);

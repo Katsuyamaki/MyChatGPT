@@ -48,7 +48,8 @@
                   generating: 0, completed: 0 };
     var observer;
     var response = { active: false, route: '', since: 0, finishing: 0,
-                     interrupted: false, generation: 0, lastStop: 0 };
+                     interrupted: false, generation: 0, lastStop: 0,
+                     startingIdentity: '', startingLength: 0 };
     var monitor = { version: 3, active: false };
 
     function bridge() { return window.AndroidBridge; }
@@ -98,11 +99,11 @@
     function nearEdge(r) {
       return r.top < innerHeight * 0.38 || r.bottom > innerHeight * 0.62;
     }
-    function compact(el, max) {
+    function compact(el, max, requireEdge) {
       if (!visible(el) || blocked(el)) return false;
       var r = el.getBoundingClientRect();
       return r.width <= innerWidth * 1.04 && r.height < Math.min(260, innerHeight * 0.54)
-          && nearEdge(r) && !!shortText(el, max)
+          && (!requireEdge || nearEdge(r)) && !!shortText(el, max)
           && !el.querySelector('textarea,input,[contenteditable="true"]');
     }
     function floatingCandidate(el) {
@@ -129,7 +130,7 @@
       var choice = null;
       for (var j = 0; j <= floating; j++) {
         var candidate = chain[j], css = getComputedStyle(candidate);
-        if (!compact(candidate, 380)) continue;
+        if (!compact(candidate, 380, true)) continue;
         var skin = css.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
                    css.backgroundColor !== 'transparent';
         var shadow = css.boxShadow && css.boxShadow !== 'none';
@@ -158,9 +159,9 @@
             while (child.parentElement && child.parentElement !== node) {
               child = child.parentElement;
             }
-            if (child !== node && compact(child, 420))
+            if (child !== node && compact(child, 420, true))
               return { el: child, kind: 'semantic' };
-            if (compact(node, 420)) return { el: node, kind: 'semantic' };
+            if (compact(node, 420, true)) return { el: node, kind: 'semantic' };
           }
         }
         var unmarked = floatingCandidate(el);
@@ -204,7 +205,10 @@
         pending.delete(el);
         try {
           if (!el.isConnected) return;
-          var ok = compact(el, state.kind === 'floating' ? 380 : 1200);
+          // Explicit toast markup may be centered; unlabeled floating cards
+          // and weak semantic live regions require a viewport-edge position.
+          var ok = compact(el, state.kind === 'floating' ? 380 : 1200,
+                           state.kind === 'semantic' || state.kind === 'floating');
           if (ok && state.kind === 'semantic') {
             var r = el.getBoundingClientRect();
             // A persistent status line can be anywhere on the page; a toast
@@ -304,7 +308,9 @@
         (parent && parent.getAttribute('data-turn-id')) ||
         (parent && parent.getAttribute('data-testid'))) || '';
       identity = String(identity).slice(0, 150);
-      return { busy: busy, assistant: last, ready: ready, error: error, identity: identity };
+      return { busy: busy, assistant: last, ready: ready, error: error,
+               identity: identity, answerLength: last ?
+                 (last.textContent || '').length : 0 };
     }
     function scheduleState() {
       if (!stateTimer) stateTimer = setTimeout(checkState, 125);
@@ -325,6 +331,8 @@
           response.since = now;
           response.finishing = 0;
           response.interrupted = false;
+          response.startingIdentity = signal.identity || '';
+          response.startingLength = signal.answerLength || 0;
           response.generation++;
           stats.generating++;
           report(true);
@@ -352,7 +360,17 @@
         }
         return;
       }
+      if (!signal.ready && now - response.finishing < 5500) {
+        stateTimer = setTimeout(checkState, 850);
+        return;
+      }
       if (!signal.ready || signal.error || now - response.since < 250) {
+        response.active = false;
+        return;
+      }
+      // A stale completed reply must never be mistaken for a fresh finish.
+      if (signal.identity && signal.identity === response.startingIdentity &&
+          signal.answerLength === response.startingLength) {
         response.active = false;
         return;
       }
