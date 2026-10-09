@@ -565,12 +565,12 @@ public class MainActivity extends Activity {
                 // the very first script execution.
                 WebViewCompat.addDocumentStartJavaScript(
                         webView, ChatGptSiteContract.FOCUS_GUARD_JS, java.util.Collections.singleton("*"));
-                // Main-frame only, unlike share overrides which intentionally run in iframes.
-                if (webView == webview) {
-                    WebViewCompat.addDocumentStartJavaScript(
-                            webView, SiteNotificationMonitor.SCRIPT,
-                            java.util.Collections.singleton("*"));
-                }
+                // setupMainWebView is called only for the primary WebView.
+                // Do not compare to the field: during renderer recovery the new
+                // WebView is configured before webview is reassigned.
+                WebViewCompat.addDocumentStartJavaScript(
+                        webView, SiteNotificationMonitor.SCRIPT,
+                        java.util.Collections.singleton("*"));
             }
         } catch (Throwable t) {
             Log.e(TAG, "addDocumentStartJavaScript failed", t);

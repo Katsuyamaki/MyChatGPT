@@ -11,7 +11,7 @@ public final class SiteNotificationMonitor {
             "st !== 'chatgpt.com' && !host.endsWith('.chatgpt.com')) return;\n    if (window.__mychatgptNotificationWatch) r" +
             "eturn;\n    window.__mychatgptNotificationWatch = true;\n    var selectors = '[data-sonner-toast],[data-hot-toas" +
             "t],.Toastify__toast,[data-testid*=\"toast\"],[role=\"alert\"],[role=\"status\"][data-state=\"open\"]';\n    var pending" +
-            " = new Set(), sent = new WeakMap(), timer = 0;\n    function enqueue(node) {\n      if (node && node.nodeType ==" +
+            " = new Set(), sent = new WeakSet(), timer = 0;\n    function enqueue(node) {\n      if (node && node.nodeType ==" +
             "= 1) pending.add(node);\n      if (!timer) timer = setTimeout(flush, 170);\n    }\n    function find(node) {\n    " +
             "  var el = node && node.nodeType === 1 ? node : node && node.parentElement;\n      if (!el) return;\n      var p" +
             "arent = el.closest && el.closest(selectors);\n      if (parent) enqueue(parent);\n      if (el.matches && el.mat" +
@@ -21,7 +21,7 @@ public final class SiteNotificationMonitor {
             "el.getClientRects().length) return;\n          var rect = el.getBoundingClientRect();\n          if (rect.width " +
             "< 2 || rect.height < 2) return;\n          if (rect.height > innerHeight * 0.55) return;\n          var raw = (e" +
             "l.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();\n          if (raw.length < 3 || raw.length >" +
-            " 1200) return;\n          if (sent.get(el) === raw) return;\n          sent.set(el, raw);\n          var anchor =" +
+            " 1200) return;\n          if (sent.has(el)) return;\n          sent.add(el);\n          var anchor =" +
             " el.querySelector('a[href*=\"/c/\"]');\n          var dest = anchor && anchor.href ? anchor.href : '';\n          " +
             "if (!dest && /(?:^|\\/)c\\/[A-Za-z0-9-]{8,128}(?:\\/|$)/.test(location.pathname)) {\n            dest = location.h" +
             "ref;\n          }\n          var bridge = window.AndroidBridge;\n          if (bridge && bridge.siteNotification)" +
