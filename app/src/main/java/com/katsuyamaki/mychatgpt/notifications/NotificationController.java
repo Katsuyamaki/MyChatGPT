@@ -27,7 +27,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.lang.ref.WeakReference;
-import java.util.regex.Pattern;
 
 /** Mirrors site notices to the Android shade and a durable local inbox. */
 public final class NotificationController {
@@ -43,8 +42,6 @@ public final class NotificationController {
     private static volatile boolean osListenerConnected;
     public static final String ACTION_OPEN = "com.katsuyamaki.mychatgpt.OPEN_NOTIFICATION";
     public static final String EXTRA_ID = "notification_id";
-    private static final Pattern CHAT_PATH =
-            Pattern.compile("(?:^|/)c/[A-Za-z0-9-]{8,128}(?:/|$)");
     private final Context context;
     private final NotificationManager manager;
     private final NotificationStore store;
@@ -434,20 +431,9 @@ public final class NotificationController {
                 .format(new Date(millis));
     }
 
-    /** Only explicit conversation routes on chatgpt.com can be opened. */
+    /** One canonical URL policy for saving and consuming chat deep links. */
     public static String safeChatUrl(String candidate) {
-        if (candidate == null || candidate.length() > 1200) return null;
-        try {
-            Uri uri = Uri.parse(candidate);
-            if (!"https".equalsIgnoreCase(uri.getScheme())
-                    || !"chatgpt.com".equalsIgnoreCase(uri.getHost())
-                    || uri.getPort() != -1) return null;
-            String path = uri.getPath();
-            if (path == null || !CHAT_PATH.matcher(path).find()) return null;
-            return uri.buildUpon().clearQuery().fragment(null).build().toString();
-        } catch (Exception e) {
-            return null;
-        }
+        return ChatLinkPolicy.normalize(candidate);
     }
 
     private void postAndroid(long id, String title, String body, long when) {

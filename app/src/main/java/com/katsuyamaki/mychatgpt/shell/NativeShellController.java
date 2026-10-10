@@ -657,17 +657,38 @@ public final class NativeShellController {
             body.setEllipsize(TextUtils.TruncateAt.END);
             body.setPadding(0, dp(4), 0, dp(2));
             row.addView(body);
+            String destination = NotificationController.safeChatUrl(item.chatUrl);
             TextView link = makeLabel(
-                    item.chatUrl != null ? "Tap to open conversation"
+                    destination != null ? "Tap to open chat · Hold to copy link"
                     : ("official-task".equals(item.source) || "official-chatgpt".equals(item.source))
                         ? "Android did not provide a chat link"
-                        : "No chat link provided", 10f);
+                        : "No conversation link supplied", 10f);
             link.setTextColor(0xFFA8D4FF);
             row.addView(link);
             LinearLayout.LayoutParams itemParams = fullWidthWrap();
             itemParams.bottomMargin = dp(7);
             pageContent.addView(row, itemParams);
             row.setOnClickListener(v -> host.openNotification(item.id));
+            row.setOnLongClickListener(v -> {
+                // Diagnostic for routing issues: user can inspect the exact
+                // HTTPS chat destination preserved with this event. Never
+                // substitute the currently open WebView URL.
+                if (destination == null) {
+                    Toast.makeText(activity, "No chat URL saved for this notice",
+                            Toast.LENGTH_SHORT).show();
+                    return true;
+                }
+                android.content.ClipboardManager clipboard =
+                        (android.content.ClipboardManager) activity.getSystemService(
+                                Context.CLIPBOARD_SERVICE);
+                if (clipboard != null) {
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                            "MyChatGPT notification chat link", destination));
+                    Toast.makeText(activity, "Saved chat link copied",
+                            Toast.LENGTH_SHORT).show();
+                }
+                return true;
+            });
         }
         LinearLayout pager = new LinearLayout(activity);
         pager.setOrientation(LinearLayout.HORIZONTAL);

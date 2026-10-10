@@ -7,7 +7,7 @@
     if (host !== 'chatgpt.com' && !host.endsWith('.chatgpt.com')) return;
 
     var older = window.__mychatgptSiteNotificationMonitor;
-    if (older && older.version === 4 && older.active) {
+    if (older && older.version === 5 && older.active) {
       older.scan();
       older.report(true);
       return;
@@ -50,7 +50,7 @@
     var response = { active: false, route: '', since: 0, finishing: 0,
                      interrupted: false, generation: 0, lastStop: 0,
                      startingIdentity: '', startingLength: 0 };
-    var monitor = { version: 4, active: false };
+    var monitor = { version: 5, active: false };
     var titleCache = new Map();
     var nameTimer = 0;
 
@@ -210,6 +210,33 @@
         return u.pathname.replace(/\/$/, '');
       } catch (ignored) { return ''; }
     }
+
+    // Called only from the native main-WebView notification tap handler.
+    // Use the site's own clickable conversation link rather than doing a
+    // full WebView reload whenever the other chat is already mounted.
+    monitor.isCurrentChat = function (target) {
+      var path = sameSitePath(target);
+      return !!path && /(?:^|\/)c\/[A-Za-z0-9-]{8,128}$/.test(path)
+          && location.origin === 'https://chatgpt.com'
+          && location.pathname.replace(/\/$/, '') === path;
+    };
+    monitor.openChat = function (target) {
+      var path = sameSitePath(target);
+      if (!path || !/(?:^|\/)c\/[A-Za-z0-9-]{8,128}$/.test(path)
+          || location.origin !== 'https://chatgpt.com') return 'load';
+      if (monitor.isCurrentChat(target)) return 'same';
+      try {
+        var anchors = document.querySelectorAll('a[href*="/c/"]');
+        for (var i = 0; i < anchors.length && i < 250; i++) {
+          if (sameSitePath(anchors[i].href) === path) {
+            anchors[i].click();
+            return 'clicked';
+          }
+        }
+      } catch (ignored) {}
+      return 'load';
+    };
+
     function anchorLabel(a) {
       if (!a) return '';
       var labelNode = a.querySelector('[data-testid*="conversation-title"],[data-testid*="chat-title"]');

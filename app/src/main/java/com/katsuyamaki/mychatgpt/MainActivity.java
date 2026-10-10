@@ -96,6 +96,11 @@ public class MainActivity extends Activity {
     private NativeShellController nativeShellController;
     private NotificationController notificationController;
     private boolean testAfterNotificationPermission;
+    // Incremented for every tap: a delayed SPA callback from an earlier
+    // notification must never navigate away from the newer selected chat.
+    private int notificationNavigationSerial;
+    private boolean activityResumed;
+    private String pendingNotificationChat;
     private final Runnable notificationHistoryChanged = () -> {
         if (nativeShellController != null) nativeShellController.refreshNotifications();
     };
@@ -392,17 +397,27 @@ public class MainActivity extends Activity {
         boolean launchedFromNotification = isNotificationIntent(launchIntent);
         String chatFromNotification = launchedFromNotification
                 ? consumeNotificationIntent(launchIntent) : null;
-        boolean restoredFromState =
-                mainWebViewController.restoreNavigationState(webview, savedInstanceState);
-        if (!restoredFromState) {
-            mainWebViewController.loadUrl(webview,
-                    chatFromNotification != null
-                            ? chatFromNotification : ChatGptSiteContract.MAIN_URL);
-        } else if (chatFromNotification != null) {
+        // A notification deep-link takes precedence over the saved navigation
+        // stack. Previously restoreNavigationState() called loadUrl(oldChat)
+        // and then immediately loadUrl(targetChat); the first load could race
+        // the second, visibly reloading the previous/current conversation.
+        boolean restoredFromState = false;
+        if (chatFromNotification != null) {
             mainWebViewController.loadUrl(webview, chatFromNotification);
+        } else {
+            restoredFromState =
+                    mainWebViewController.restoreNavigationState(webview, savedInstanceState);
+            if (!restoredFromState) {
+                mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
+            }
+            if (launchedFromNotification) {
+                nativeShellController.showNotificationsPage();
+            }
         }
-        if (launchedFromNotification && chatFromNotification == null) {
-            nativeShellController.showNotificationsPage();
+        if (launchedFromNotification) {
+            // Never retain a consumed tap as the Activity's launch Intent:
+            // otherwise a later process recreation can reopen a stale chat.
+            setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
         }
 
         // Process share-from-outside intent AFTER the initial load has been
@@ -427,18 +442,45 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        setIntent(intent);
         if (isNotificationIntent(intent)) {
             String chatUrl = consumeNotificationIntent(intent);
+            // An incoming tap supersedes all still-pending route callbacks.
+            ++notificationNavigationSerial;
+            pendingNotificationChat = null;
+            // Android's singleTask Activity reuses the live WebView. Use the
+            // site's own conversation links when possible; do not reload the
+            // entire app just because a notification was tapped.
             if (chatUrl != null) {
-                nativeShellController.closePanelIfOpen();
-                mainWebViewController.loadUrl(webview, chatUrl);
-            } else {
+                // Android may invoke onNewIntent before onResume while our
+                // WebView is paused. Queue until the renderer is resumed so
+                // evaluateJavascript callbacks cannot silently disappear.
+                pendingNotificationChat = chatUrl;
+                dispatchPendingNotificationChat();
+            } else if (nativeShellController != null) {
                 nativeShellController.showNotificationsPage();
             }
+            setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
         } else {
+            pendingNotificationChat = null;
+            ++notificationNavigationSerial;
+            setIntent(intent);
             transferController.handleShareIntent(intent);
         }
+    }
+
+    private void dispatchPendingNotificationChat() {
+        if (!activityResumed || pendingNotificationChat == null || webview == null) {
+            return;
+        }
+        final WebView view = webview;
+        view.post(() -> {
+            // This runnable may fire after another notification or lifecycle
+            // change. Read the *latest* pending destination, never a stale one.
+            if (!activityResumed || view != webview) return;
+            String target = pendingNotificationChat;
+            pendingNotificationChat = null;
+            if (target != null) navigateToNotificationConversation(target);
+        });
     }
 
     private boolean isNotificationIntent(Intent intent) {
@@ -454,7 +496,7 @@ public class MainActivity extends Activity {
         if (item == null) return null;
         notificationController.markRead(id);
         if (nativeShellController != null) nativeShellController.refreshNotifications();
-        return item.chatUrl;
+        return NotificationController.safeChatUrl(item.chatUrl);
     }
 
     private void openNotification(long id) {
@@ -464,13 +506,91 @@ public class MainActivity extends Activity {
         notificationController.markRead(id);
         if (nativeShellController != null) nativeShellController.refreshNotifications();
         String chatUrl = NotificationController.safeChatUrl(item.chatUrl);
-        if (chatUrl != null && mainWebViewController != null && webview != null) {
-            nativeShellController.closePanelIfOpen();
-            mainWebViewController.loadUrl(webview, chatUrl);
+        if (chatUrl != null) {
+            navigateToNotificationConversation(chatUrl);
         } else {
-            // Avoid turning the history warning itself into another notification.
-            Toast.makeText(this, "Android did not supply a conversation link",
+            // Task notices often do not expose a conversation URL. Do not
+            // reload whichever chat happens to be open or invent a route.
+            Toast.makeText(this, "This notice has no linked conversation",
                     Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * Route through ChatGPT's SPA sidebar link when the site is already open.
+     * Unlike WebView.loadUrl(), that preserves the running page and uses the
+     * same client-side routing behavior as selecting the chat manually.
+     *
+     * If the link is not mounted (collapsed project/sidebar) or the site does
+     * not navigate, fall back to the exact persisted HTTPS chat URL. All
+     * callback branches are generation-guarded against rapid repeated taps.
+     */
+    private void navigateToNotificationConversation(String candidateUrl) {
+        final String target = NotificationController.safeChatUrl(candidateUrl);
+        if (target == null || webview == null || mainWebViewController == null) {
+            if (nativeShellController != null) nativeShellController.showNotificationsPage();
+            return;
+        }
+        if (nativeShellController != null) nativeShellController.closePanelIfOpen();
+        final WebView view = webview;
+        final int token = ++notificationNavigationSerial;
+        // A new/cold WebView cannot respond to evaluateJavascript reliably.
+        if (!ChatGptSiteContract.isChatGptWebUrl(view.getUrl())) {
+            mainWebViewController.loadUrl(view, target);
+            return;
+        }
+        // JS is only evaluated in the main trusted ChatGPT WebView. The URL
+        // literal is JSON-escaped, not concatenated as executable content.
+        String literal = org.json.JSONObject.quote(target);
+        String script = "(function(){try{"
+                + "var m=window.__mychatgptSiteNotificationMonitor;"
+                + "return m&&typeof m.openChat==='function'"
+                + "?m.openChat(" + literal + "):'load';"
+                + "}catch(e){return 'load';}})();";
+        try {
+            view.evaluateJavascript(script, result -> {
+                if (token != notificationNavigationSerial || view != webview) return;
+                if ("\"same\"".equals(result)) return; // already in that chat
+                if ("\"clicked\"".equals(result)) {
+                    // A React/Next route transition is asynchronous. Verify it
+                    // landed in the right chat before doing a network load.
+                    view.postDelayed(
+                            () -> verifyNotificationConversation(view, target, token),
+                            1350L);
+                } else {
+                    mainWebViewController.loadUrl(view, target);
+                }
+            });
+        } catch (Exception failure) {
+            Log.w(TAG, "In-page notification navigation unavailable; loading saved route");
+            if (token == notificationNavigationSerial && view == webview) {
+                mainWebViewController.loadUrl(view, target);
+            }
+        }
+    }
+
+    private void verifyNotificationConversation(WebView view, String target, int token) {
+        if (token != notificationNavigationSerial || view != webview) return;
+        String literal = org.json.JSONObject.quote(target);
+        String script = "(function(){try{"
+                + "var m=window.__mychatgptSiteNotificationMonitor;"
+                + "if(m&&typeof m.isCurrentChat==='function')"
+                + "return !!m.isCurrentChat(" + literal + ");"
+                + "var t=new URL(" + literal + ");"
+                + "return location.origin===t.origin"
+                + "&&location.pathname.replace(/\\/$/,'')===t.pathname;"
+                + "}catch(e){return false;}})();";
+        try {
+            view.evaluateJavascript(script, matched -> {
+                if (token != notificationNavigationSerial || view != webview) return;
+                if (!"true".equals(matched)) {
+                    mainWebViewController.loadUrl(view, target);
+                }
+            });
+        } catch (Exception failure) {
+            if (token == notificationNavigationSerial && view == webview) {
+                mainWebViewController.loadUrl(view, target);
+            }
         }
     }
 
@@ -1065,6 +1185,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        activityResumed = false;
         super.onPause();
         // Reaching PAUSE proves this launch was real and interactive — any
         // process death while backgrounded afterwards is NORMAL lifecycle
@@ -1103,6 +1224,8 @@ public class MainActivity extends Activity {
         super.onResume();
         if (mainWebViewController != null) mainWebViewController.resume(webview);
         if (popupAuthController != null) popupAuthController.resumeAll();
+        activityResumed = true;
+        dispatchPendingNotificationChat();
         // Android notification access may have been granted in Settings while
         // we were backgrounded, or a real push archived by the OS listener.
         if (nativeShellController != null) nativeShellController.refreshNotifications();

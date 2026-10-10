@@ -54,6 +54,51 @@ Scheduled-task notifications only have a conversation link when the task
 notice provides a trustworthy explicit chat link; they never assume that
 the currently open conversation is the scheduled task's chat.
 
+### Open the originating chat from a notification
+
+Completion notices store an explicit **ChatGPT conversation URL** at the
+moment the response finishes. This URL is stored alongside the notification
+row in private SQLite, not reconstructed from whichever chat happens to be
+open when a user taps.
+
+- **Tap in Android's notification shade:** the PendingIntent contains the
+  notification ID. MyChatGPT loads that record, resolves its saved and
+  validated chat URL, and opens the matching conversation inside MyChatGPT.
+- **Tap a history row:** the same saved ID/URL is used.
+- **Already viewing that chat:** do not reload it.
+- **Different chat, MyChatGPT already running:** use the matching ChatGPT
+  sidebar link when available so its own SPA router switches conversations.
+  If no matching link is mounted, fall back to the saved HTTPS chat URL;
+  verify that a sidebar click navigated before deciding to reload.
+- **Tapped while MyChatGPT is backgrounded:** defer site navigation until
+  Android resumes the WebView renderer, instead of sending JavaScript to
+  a paused page and losing the navigation callback. Newer taps supersede
+  older pending callbacks.
+- **Cold start from a notification:** load the saved destination directly,
+  before any attempt to restore the previous WebView state. Previously, the
+  saved WebView URL was reloaded first and could race the destination.
+- **After an Android notification tap:** clear the consumed Activity intent
+  so a later Activity recreation cannot reopen the old notification route.
+- **No usable chat URL:** do not reload or guess the current chat. Android
+  taps show MyChatGPT's notification inbox; in-app history taps explain
+  that no link was provided. Some task notices are genuinely missing links.
+
+In notification history, **long-press a row** to copy the *saved* chat URL.
+This diagnostic distinguishes "the wrong URL was stored" from "ChatGPT did
+not navigate to a correct stored URL" without putting URLs in system logs.
+
+The canonical URL policy allows HTTPS `chatgpt.com/c/<chat-id>` and
+`chatgpt.com/g/<project-id>/c/<chat-id>` routes, strips query/fragment
+parameters, rejects other domains/schemes/userinfo/ports, and is covered
+by standalone JDK regression tests.
+
+**Device validation:** complete a response in chat A; switch manually to
+chat B; tap A's new Android notification. MyChatGPT should navigate to A
+without reloading B. Repeat with the in-app row, after closing/reopening
+the app, and with a project chat A. The row's long-press copied URL should
+still point to A. Test already-open chat A (no needless reload), and
+task notices without explicit links (inbox instead of a guessed chat).
+
 ### Notification history
 
 The default inbox and unread icon count show only `completion`,
