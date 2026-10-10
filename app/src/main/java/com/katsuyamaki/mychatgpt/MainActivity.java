@@ -506,6 +506,10 @@ public class MainActivity extends Activity {
         notificationController.markRead(id);
         if (nativeShellController != null) nativeShellController.refreshNotifications();
         String chatUrl = NotificationController.safeChatUrl(item.chatUrl);
+        // An in-app tap takes precedence over an earlier Android shade tap
+        // that may still be waiting for the WebView to resume.
+        pendingNotificationChat = null;
+        ++notificationNavigationSerial;
         if (chatUrl != null) {
             navigateToNotificationConversation(chatUrl);
         } else {
@@ -532,6 +536,10 @@ public class MainActivity extends Activity {
             return;
         }
         if (nativeShellController != null) nativeShellController.closePanelIfOpen();
+        if (!activityResumed) {
+            pendingNotificationChat = target;
+            return;
+        }
         final WebView view = webview;
         final int token = ++notificationNavigationSerial;
         // A new/cold WebView cannot respond to evaluateJavascript reliably.
@@ -571,6 +579,10 @@ public class MainActivity extends Activity {
 
     private void verifyNotificationConversation(WebView view, String target, int token) {
         if (token != notificationNavigationSerial || view != webview) return;
+        if (!activityResumed) {
+            pendingNotificationChat = target;
+            return;
+        }
         String literal = org.json.JSONObject.quote(target);
         String script = "(function(){try{"
                 + "var m=window.__mychatgptSiteNotificationMonitor;"
