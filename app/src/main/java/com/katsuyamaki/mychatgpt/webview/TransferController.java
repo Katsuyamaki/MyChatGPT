@@ -113,7 +113,7 @@ public final class TransferController {
                 downloadWithCookies(
                         download[0], download[1], download[2], download[3]);
             } else if (download != null) {
-                Toast.makeText(activity,
+                com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                         "Download cancelled — storage permission was denied",
                         Toast.LENGTH_LONG).show();
             }
@@ -226,7 +226,7 @@ public final class TransferController {
                 clipboard.setPrimaryClip(clip);
                 Log.i(TAG, "Text copied to clipboard");
                 if (Build.VERSION.SDK_INT < 33) {
-                    Toast.makeText(activity,
+                    com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                             "Text copied — paste it into MyChatGPT",
                             Toast.LENGTH_LONG).show();
                 }
@@ -256,7 +256,7 @@ public final class TransferController {
                 File outFile = new File(activity.getCacheDir(), fileName);
                 InputStream in = activity.getContentResolver().openInputStream(fileUri);
                 if (in == null) {
-                    activity.runOnUiThread(() -> Toast.makeText(activity,
+                    activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                             "Cannot read the shared file", Toast.LENGTH_LONG).show());
                     return;
                 }
@@ -294,7 +294,7 @@ public final class TransferController {
                         pendingFileName = fileFinalName;
                         pendingFileMime = fileMime != null
                                 ? fileMime : "application/octet-stream";
-                        Toast.makeText(activity,
+                        com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                                 "Please wait — the file will attach automatically",
                                 Toast.LENGTH_LONG).show();
                     }
@@ -314,7 +314,7 @@ public final class TransferController {
                         main.postDelayed(() -> {
                             if (pendingShareFileUri != null
                                     && !activity.isFinishing()) {
-                                Toast.makeText(activity,
+                                com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                                         "Couldn't attach automatically — tap + and choose Files",
                                         Toast.LENGTH_LONG).show();
                             }
@@ -323,7 +323,7 @@ public final class TransferController {
                 });
             } catch (Exception e) {
                 Log.e(TAG, "handleSharedFile failed", e);
-                activity.runOnUiThread(() -> Toast.makeText(activity,
+                activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                         "Failed to process file: " + e.getMessage(),
                         Toast.LENGTH_LONG).show());
             }
@@ -463,7 +463,7 @@ public final class TransferController {
                         ChatGptSiteContract.ATTACHMENT_VERIFY_DELAY_MS);
             }
         } else if (pendingShareFileUri != null) {
-            Toast.makeText(activity,
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                     "Couldn't attach automatically — tap + and choose Files",
                     Toast.LENGTH_LONG).show();
         }
@@ -684,7 +684,7 @@ public final class TransferController {
             activity.startActivity(Intent.createChooser(share, "Share"));
         } catch (Exception e) {
             Log.e(TAG, "shareTextNative failed", e);
-            Toast.makeText(activity, "Share failed", Toast.LENGTH_SHORT).show();
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Share failed", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -725,12 +725,12 @@ public final class TransferController {
                         activity.startActivity(Intent.createChooser(share, "Share"));
                     } catch (Exception e) {
                         Log.e(TAG, "shareFileNative intent failed", e);
-                        Toast.makeText(activity, "Share failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                        com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Share failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
                     }
                 });
             } catch (Exception e) {
                 Log.e(TAG, "shareFileNative failed", e);
-                activity.runOnUiThread(() -> Toast.makeText(activity,
+                activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                         "Share failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
             }
         }).start();
@@ -773,7 +773,7 @@ public final class TransferController {
                 int code = conn.getResponseCode();
                 if (code < 200 || code >= 400) {
                     final int c = code;
-                    activity.runOnUiThread(() -> Toast.makeText(activity,
+                    activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                             "Failed: HTTP " + c, Toast.LENGTH_LONG).show());
                     return;
                 }
@@ -803,7 +803,7 @@ public final class TransferController {
                 activity.runOnUiThread(() -> shareFile(finalOutFile, finalMime));
             } catch (Exception e) {
                 Log.e(TAG, "downloadAndShareImageFile failed", e);
-                activity.runOnUiThread(() -> Toast.makeText(activity,
+                activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                         "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
             } finally {
                 if (in != null) try { in.close(); } catch (Exception ignored) {}
@@ -825,7 +825,7 @@ public final class TransferController {
             activity.startActivity(Intent.createChooser(share, "Share"));
         } catch (Exception e) {
             Log.e(TAG, "shareFile failed", e);
-            Toast.makeText(activity, "Share failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Share failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 
@@ -853,7 +853,7 @@ public final class TransferController {
                 conn.setRequestProperty("Accept-Encoding", "identity");
                 int code = conn.getResponseCode();
                 if (code < 200 || code >= 400) {
-                    activity.runOnUiThread(() -> Toast.makeText(activity, "Failed: HTTP " + code, Toast.LENGTH_LONG).show());
+                    activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Failed: HTTP " + code, Toast.LENGTH_LONG).show());
                     return;
                 }
                 String mime = conn.getContentType();
@@ -862,7 +862,7 @@ public final class TransferController {
                 // an image — fail loudly instead (link expired / auth bounce).
                 if (mime != null && mime.toLowerCase().startsWith("text/html")) {
                     Log.e(TAG, "Image download got HTML interstitial: " + url);
-                    activity.runOnUiThread(() -> Toast.makeText(activity,
+                    activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                             "Failed: the server returned a web page",
                             Toast.LENGTH_LONG).show());
                     return;
@@ -892,7 +892,7 @@ public final class TransferController {
                     out = new java.io.FileOutputStream(new File(dl, fileName));
                 }
                 if (out == null) {
-                    activity.runOnUiThread(() -> Toast.makeText(activity, "Failed to save", Toast.LENGTH_LONG).show());
+                    activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Failed to save", Toast.LENGTH_LONG).show());
                     return;
                 }
                 in = conn.getInputStream();
@@ -901,10 +901,10 @@ public final class TransferController {
                 while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
                 out.flush();
                 final String fn = fileName;
-                activity.runOnUiThread(() -> Toast.makeText(activity, "Saved to Download/" + fn, Toast.LENGTH_LONG).show());
+                activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Saved to Download/" + fn, Toast.LENGTH_LONG).show());
             } catch (Exception e) {
                 Log.e(TAG, "downloadImageToDownloads failed", e);
-                activity.runOnUiThread(() -> Toast.makeText(activity, "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
             } finally {
                 if (in != null) try { in.close(); } catch (Exception ignored) {}
                 if (out != null) try { out.close(); } catch (Exception ignored) {}
@@ -947,7 +947,7 @@ public final class TransferController {
      * delays the actual revocation.
      */
     private void downloadBlobUrl(WebView webView, String blobUrl, String contentDisposition, String mimetype) {
-        Toast.makeText(activity, "Downloading...", Toast.LENGTH_SHORT).show();
+        com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Downloading...", Toast.LENGTH_SHORT).show();
         // blob: URLs carry no usable filename and contentDisposition is
         // usually null — use a timestamp name; the real extension is fixed
         // from the payload's MIME type in handleBlobDownload.
@@ -970,7 +970,7 @@ public final class TransferController {
                 blobDownloadInFlight = false;
                 pendingBlobFilename = null;
                 pendingBlobMime = null;
-                Toast.makeText(activity,
+                com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                         "Download did not complete. Hold down on the image to open the share & download menu.",
                         Toast.LENGTH_LONG).show();
             }
@@ -993,7 +993,7 @@ public final class TransferController {
         blobDownloadInFlight = false;
         pendingBlobFilename = null;
         pendingBlobMime = null;
-        Toast.makeText(activity,
+        com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                 "Can't download directly. Hold down on the image to open the share & download menu.",
                 Toast.LENGTH_LONG).show();
     }
@@ -1037,7 +1037,7 @@ public final class TransferController {
         int comma = dataUrl.indexOf(',');
         if (comma < 0) return;
         String b64 = dataUrl.substring(comma + 1);
-        Toast.makeText(activity, "Downloading " + filename + "...", Toast.LENGTH_SHORT).show();
+        com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Downloading " + filename + "...", Toast.LENGTH_SHORT).show();
         saveBlobBase64(b64, filename, mime);
     }
 
@@ -1083,13 +1083,13 @@ public final class TransferController {
                             .getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY);
                     Uri itemUri = resolver.insert(collection, values);
                     if (itemUri == null) {
-                        activity.runOnUiThread(() -> Toast.makeText(activity,
+                        activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                                 "Failed to create download entry", Toast.LENGTH_LONG).show());
                         return;
                     }
                     java.io.OutputStream out = resolver.openOutputStream(itemUri);
                     if (out == null) {
-                        activity.runOnUiThread(() -> Toast.makeText(activity,
+                        activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                                 "Failed to open output stream", Toast.LENGTH_LONG).show());
                         return;
                     }
@@ -1102,11 +1102,11 @@ public final class TransferController {
                     if (!dl.exists()) dl.mkdirs();
                     new java.io.FileOutputStream(new File(dl, fileName)).write(bytes);
                 }
-                activity.runOnUiThread(() -> Toast.makeText(activity,
+                activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                         "Saved to Download/" + fileName, Toast.LENGTH_LONG).show());
             } catch (Exception e) {
                 Log.e(TAG, "saveBlobBase64 failed", e);
-                activity.runOnUiThread(() -> Toast.makeText(activity,
+                activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                         "Download failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
             }
         }).start();
@@ -1131,7 +1131,7 @@ public final class TransferController {
             return;
         }
 
-        Toast.makeText(activity, "Downloading: " + fileName, Toast.LENGTH_SHORT).show();
+        com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Downloading: " + fileName, Toast.LENGTH_SHORT).show();
         saveFileWithCookies(url, userAgent, cookies, fileName, finalMimetype);
     }
 
@@ -1162,7 +1162,7 @@ public final class TransferController {
                 int responseCode = conn.getResponseCode();
                 if (responseCode < 200 || responseCode >= 400) {
                     final int code = responseCode;
-                    activity.runOnUiThread(() -> Toast.makeText(activity,
+                    activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                             "Download failed: HTTP " + code, Toast.LENGTH_LONG).show());
                     return;
                 }
@@ -1198,7 +1198,7 @@ public final class TransferController {
                         && !effectiveName.toLowerCase().endsWith(".htm")) {
                     final String fn = effectiveName;
                     Log.e(TAG, "Download got HTML interstitial for " + fn);
-                    activity.runOnUiThread(() -> Toast.makeText(activity,
+                    activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                             "Download failed: the server returned a web page (link may have expired)",
                             Toast.LENGTH_LONG).show());
                     return;
@@ -1236,13 +1236,13 @@ public final class TransferController {
                             .getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY);
                     Uri itemUri = resolver.insert(collection, values);
                     if (itemUri == null) {
-                        activity.runOnUiThread(() -> Toast.makeText(activity,
+                        activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                                 "Failed to create download entry", Toast.LENGTH_LONG).show());
                         return;
                     }
                     output = resolver.openOutputStream(itemUri);
                     if (output == null) {
-                        activity.runOnUiThread(() -> Toast.makeText(activity,
+                        activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                                 "Failed to open output stream", Toast.LENGTH_LONG).show());
                         return;
                     }
@@ -1278,12 +1278,12 @@ public final class TransferController {
                 }
 
                 final String finalFileName = effectiveName;
-                activity.runOnUiThread(() -> Toast.makeText(activity,
+                activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                         "Saved to Download/" + finalFileName,
                         Toast.LENGTH_LONG).show());
             } catch (Exception e) {
                 Log.e(TAG, "Download failed", e);
-                activity.runOnUiThread(() -> Toast.makeText(activity,
+                activity.runOnUiThread(() -> com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity,
                         "Download failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
             } finally {
                 if (input != null) try { input.close(); } catch (Exception ignored) {}

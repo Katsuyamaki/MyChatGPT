@@ -23,6 +23,13 @@ public final class WebBridgeController {
     public interface Host {
         WebView getMainWebView();
         void onPageReady();
+        void onSiteNotification(String text, String candidateUrl,
+                                String chatTitle, String projectName);
+        void onSiteMonitorReady();
+        void onSiteMonitorMetrics(int mutations, int candidates, int floating,
+                                  int sent, int generating, int completed);
+        void onChatResponseCompleted(String url, String turnKey,
+                                     String chatTitle, String projectName);
     }
 
     private final Activity activity;
@@ -78,6 +85,60 @@ public final class WebBridgeController {
      * navigator.share text fallback. The site provides its own copied UI, so
      * this intentionally writes the clipboard without an additional toast.
      */
+    /**
+     * Site toast bridge. Only the primary ChatGPT document may emit inbox items;
+     * popup/iframe copies of AndroidBridge are never accepted.
+     */
+    @JavascriptInterface
+    public void siteMonitorReady() {
+        activity.runOnUiThread(() -> {
+            if (hostWebView != host.getMainWebView()) return;
+            if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
+            host.onSiteMonitorReady();
+        });
+    }
+
+    @JavascriptInterface
+    public void siteNotification(final String text, final String candidateUrl,
+                                 final String chatTitle, final String projectName) {
+        activity.runOnUiThread(() -> {
+            if (hostWebView != host.getMainWebView()) return;
+            if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
+            host.onSiteNotification(text, candidateUrl, chatTitle, projectName);
+        });
+    }
+
+    /** Counters only: no page or conversation text is transported. */
+    @JavascriptInterface
+    public void siteMonitorMetrics(final int mutations, final int candidates,
+                                   final int floating, final int sent,
+                                   final int generating, final int completed) {
+        activity.runOnUiThread(() -> {
+            if (hostWebView != host.getMainWebView()) return;
+            if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
+            host.onSiteMonitorMetrics(mutations, candidates, floating,
+                                      sent, generating, completed);
+        });
+    }
+
+    /** Stable per-turn completion state, not the assistant response body. */
+    @JavascriptInterface
+    public void chatResponseCompleted(final String url, final String turnKey,
+                                      final String chatTitle, final String projectName) {
+        activity.runOnUiThread(() -> {
+            if (hostWebView != host.getMainWebView()) return;
+            if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
+            // The active main-frame route must match the reported completion,
+            // not a stale conversation the WebView navigated away from.
+            String live = com.katsuyamaki.mychatgpt.notifications.NotificationController
+                    .safeChatUrl(hostWebView.getUrl());
+            String claimed = com.katsuyamaki.mychatgpt.notifications.NotificationController
+                    .safeChatUrl(url);
+            if (live == null || !live.equals(claimed)) return;
+            host.onChatResponseCompleted(url, turnKey, chatTitle, projectName);
+        });
+    }
+
     @JavascriptInterface
     public void copyToClipboard(final String text) {
         if (!hostAllowed()) return;

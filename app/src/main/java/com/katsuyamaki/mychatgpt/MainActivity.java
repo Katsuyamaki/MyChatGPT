@@ -65,6 +65,10 @@ import com.katsuyamaki.mychatgpt.webview.WebViewUtil;
 import com.katsuyamaki.mychatgpt.webview.WelcomeDialog;
 import com.katsuyamaki.mychatgpt.site.ChatGptSiteContract;
 import com.katsuyamaki.mychatgpt.shell.NativeShellController;
+import com.katsuyamaki.mychatgpt.notifications.NotificationController;
+import com.katsuyamaki.mychatgpt.notifications.AppToast;
+import com.katsuyamaki.mychatgpt.notifications.NotificationStore;
+import com.katsuyamaki.mychatgpt.notifications.SiteNotificationMonitor;
 import com.google.android.material.progressindicator.LinearProgressIndicator;
 
 import java.io.File;
@@ -81,6 +85,7 @@ public class MainActivity extends Activity {
     private static final String PREFS_NAME = "webgpt_prefs";
 
     private static final int REQUEST_MEDIA_PERM = 1004;
+    private static final int REQUEST_NOTIFICATION_PERM = 1005;
 
     WebView webview;
     ViewGroup rootLayout;
@@ -89,6 +94,16 @@ public class MainActivity extends Activity {
     private PopupAuthController popupAuthController;
     private TransferController transferController;
     private NativeShellController nativeShellController;
+    private NotificationController notificationController;
+    private boolean testAfterNotificationPermission;
+    // Incremented for every tap: a delayed SPA callback from an earlier
+    // notification must never navigate away from the newer selected chat.
+    private int notificationNavigationSerial;
+    private boolean activityResumed;
+    private String pendingNotificationChat;
+    private final Runnable notificationHistoryChanged = () -> {
+        if (nativeShellController != null) nativeShellController.refreshNotifications();
+    };
 
     // Pending WebView permission request (camera/mic) while the OS dialog is up
     private PermissionRequest pendingWebPermissionRequest;
@@ -169,6 +184,7 @@ public class MainActivity extends Activity {
                 && !bootIntent.getBooleanExtra(
                         ShareRelayActivity.EXTRA_RELAUNCHED, false)
                 && !isTaskRoot()
+                && !NotificationController.ACTION_OPEN.equals(bootIntent.getAction())
                 && bootIntent.getParcelableExtra(Intent.EXTRA_STREAM) == null) {
             try {
                 Intent relay = new Intent(this, ShareRelayActivity.class);
@@ -183,6 +199,10 @@ public class MainActivity extends Activity {
                 Log.e(TAG, "share relay start failed; booting in place", t);
             }
         }
+
+        // Count only real WebView launches, not background notification
+        // listener starts (which also run Application.onCreate).
+        CrashTracker.init(getApplicationContext());
 
         // ─── WebView switcher pre-launch checks ────────────────────────────
         // (1) If the current WebView is too old to support DOCUMENT_START_SCRIPT,
@@ -222,7 +242,7 @@ public class MainActivity extends Activity {
 
             if (CrashTracker.hasCrashes()) {
                 Log.w(TAG, "Crash threshold reached; bouncing to WebView Manager");
-                Toast.makeText(this, R.string.webview_pick_another, Toast.LENGTH_LONG).show();
+                AppToast.makeText(this, R.string.webview_pick_another, Toast.LENGTH_LONG).show();
                 CrashTracker.reset();
                 Intent i = new Intent(this, SettingsActivity.class);
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -237,6 +257,7 @@ public class MainActivity extends Activity {
 
         webview = findViewById(R.id.activity_main_webview);
         rootLayout = (ViewGroup) webview.getParent();
+        notificationController = new NotificationController(this);
         mainWebViewController = new MainWebViewController(
                 this,
                 rootLayout,
@@ -314,8 +335,43 @@ public class MainActivity extends Activity {
                         mainWebViewController.forceReloadCurrent(webview, current);
                     }
 
+                    @Override
+                    public NotificationController getNotificationController() {
+                        return notificationController;
+                    }
+
+                    @Override
+                    public void openNotification(long id) {
+                        MainActivity.this.openNotification(id);
+                    }
+
+                    @Override
+                    public void requestNotificationPermission() {
+                        MainActivity.this.requestAndroidNotificationPermission(false);
+                    }
+
+                    @Override
+                    public void sendTestNotification() {
+                        MainActivity.this.sendTestNotification();
+                    }
+
+                    @Override
+                    public void testSiteCapture() {
+                        MainActivity.this.testSiteCapture();
+                    }
+
+                    @Override
+                    public void testUnmarkedCapture() {
+                        MainActivity.this.testUnmarkedCapture();
+                    }
+
+                    @Override
+                    public void copyMonitorDiagnostics() {
+                        MainActivity.this.copyMonitorDiagnostics();
+                    }
                 });
         loadingStateController.initializePresentation();
+        NotificationController.observeHistory(notificationHistoryChanged);
 
         // Wire the WebView up (initial setup; recreated in place if the
         // renderer ever dies — see onRenderProcessGone).
@@ -337,10 +393,31 @@ public class MainActivity extends Activity {
         // WebView's back/forward list and resume the EXACT page — the open
         // conversation included — instead of cold-booting the homepage
         // (the "app relaunches and loses my chat" symptom).
-        boolean restoredFromState =
-                mainWebViewController.restoreNavigationState(webview, savedInstanceState);
-        if (!restoredFromState) {
-            mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
+        Intent launchIntent = getIntent();
+        boolean launchedFromNotification = isNotificationIntent(launchIntent);
+        String chatFromNotification = launchedFromNotification
+                ? consumeNotificationIntent(launchIntent) : null;
+        // A notification deep-link takes precedence over the saved navigation
+        // stack. Previously restoreNavigationState() called loadUrl(oldChat)
+        // and then immediately loadUrl(targetChat); the first load could race
+        // the second, visibly reloading the previous/current conversation.
+        boolean restoredFromState = false;
+        if (chatFromNotification != null) {
+            mainWebViewController.loadUrl(webview, chatFromNotification);
+        } else {
+            restoredFromState =
+                    mainWebViewController.restoreNavigationState(webview, savedInstanceState);
+            if (!restoredFromState) {
+                mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
+            }
+            if (launchedFromNotification) {
+                nativeShellController.showNotificationsPage();
+            }
+        }
+        if (launchedFromNotification) {
+            // Never retain a consumed tap as the Activity's launch Intent:
+            // otherwise a later process recreation can reopen a stale chat.
+            setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
         }
 
         // Process share-from-outside intent AFTER the initial load has been
@@ -351,11 +428,9 @@ public class MainActivity extends Activity {
         // is the intent that originally created this task — re-processing
         // it after a rotation/process restart would re-copy an old share
         // to the clipboard every time).
-        if (!restoredFromState) {
-            Intent launchIntent = getIntent();
-            if (launchIntent != null) {
-                transferController.handleShareIntent(launchIntent);
-            }
+        if (!restoredFromState && !launchedFromNotification
+                && launchIntent != null) {
+            transferController.handleShareIntent(launchIntent);
         }
     }
 
@@ -367,8 +442,246 @@ public class MainActivity extends Activity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        setIntent(intent);
-        transferController.handleShareIntent(intent);
+        if (isNotificationIntent(intent)) {
+            String chatUrl = consumeNotificationIntent(intent);
+            // An incoming tap supersedes all still-pending route callbacks.
+            ++notificationNavigationSerial;
+            pendingNotificationChat = null;
+            // Android's singleTask Activity reuses the live WebView. Use the
+            // site's own conversation links when possible; do not reload the
+            // entire app just because a notification was tapped.
+            if (chatUrl != null) {
+                // Android may invoke onNewIntent before onResume while our
+                // WebView is paused. Queue until the renderer is resumed so
+                // evaluateJavascript callbacks cannot silently disappear.
+                pendingNotificationChat = chatUrl;
+                dispatchPendingNotificationChat();
+            } else if (nativeShellController != null) {
+                nativeShellController.showNotificationsPage();
+            }
+            setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
+        } else {
+            pendingNotificationChat = null;
+            ++notificationNavigationSerial;
+            setIntent(intent);
+            transferController.handleShareIntent(intent);
+        }
+    }
+
+    private void dispatchPendingNotificationChat() {
+        if (!activityResumed || pendingNotificationChat == null || webview == null) {
+            return;
+        }
+        final WebView view = webview;
+        view.post(() -> {
+            // This runnable may fire after another notification or lifecycle
+            // change. Read the *latest* pending destination, never a stale one.
+            if (!activityResumed || view != webview) return;
+            String target = pendingNotificationChat;
+            pendingNotificationChat = null;
+            if (target != null) navigateToNotificationConversation(target);
+        });
+    }
+
+    private boolean isNotificationIntent(Intent intent) {
+        return intent != null
+                && NotificationController.ACTION_OPEN.equals(intent.getAction());
+    }
+
+    /** The intent contains only a local record ID; the destination is from our DB. */
+    private String consumeNotificationIntent(Intent intent) {
+        if (notificationController == null || intent == null) return null;
+        long id = intent.getLongExtra(NotificationController.EXTRA_ID, -1L);
+        NotificationStore.Entry item = notificationController.find(id);
+        if (item == null) return null;
+        notificationController.markRead(id);
+        if (nativeShellController != null) nativeShellController.refreshNotifications();
+        return NotificationController.safeChatUrl(item.chatUrl);
+    }
+
+    private void openNotification(long id) {
+        if (notificationController == null) return;
+        NotificationStore.Entry item = notificationController.find(id);
+        if (item == null) return;
+        notificationController.markRead(id);
+        if (nativeShellController != null) nativeShellController.refreshNotifications();
+        String chatUrl = NotificationController.safeChatUrl(item.chatUrl);
+        // An in-app tap takes precedence over an earlier Android shade tap
+        // that may still be waiting for the WebView to resume.
+        pendingNotificationChat = null;
+        ++notificationNavigationSerial;
+        if (chatUrl != null) {
+            navigateToNotificationConversation(chatUrl);
+        } else {
+            // Task notices often do not expose a conversation URL. Do not
+            // reload whichever chat happens to be open or invent a route.
+            Toast.makeText(this, "This notice has no linked conversation",
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * Route through ChatGPT's SPA sidebar link when the site is already open.
+     * Unlike WebView.loadUrl(), that preserves the running page and uses the
+     * same client-side routing behavior as selecting the chat manually.
+     *
+     * If the link is not mounted (collapsed project/sidebar) or the site does
+     * not navigate, fall back to the exact persisted HTTPS chat URL. All
+     * callback branches are generation-guarded against rapid repeated taps.
+     */
+    private void navigateToNotificationConversation(String candidateUrl) {
+        final String target = NotificationController.safeChatUrl(candidateUrl);
+        if (target == null || webview == null || mainWebViewController == null) {
+            if (nativeShellController != null) nativeShellController.showNotificationsPage();
+            return;
+        }
+        if (nativeShellController != null) nativeShellController.closePanelIfOpen();
+        if (!activityResumed) {
+            pendingNotificationChat = target;
+            return;
+        }
+        final WebView view = webview;
+        final int token = ++notificationNavigationSerial;
+        // A new/cold WebView cannot respond to evaluateJavascript reliably.
+        if (!ChatGptSiteContract.isChatGptWebUrl(view.getUrl())) {
+            mainWebViewController.loadUrl(view, target);
+            return;
+        }
+        // JS is only evaluated in the main trusted ChatGPT WebView. The URL
+        // literal is JSON-escaped, not concatenated as executable content.
+        String literal = org.json.JSONObject.quote(target);
+        String script = "(function(){try{"
+                + "var m=window.__mychatgptSiteNotificationMonitor;"
+                + "return m&&typeof m.openChat==='function'"
+                + "?m.openChat(" + literal + "):'load';"
+                + "}catch(e){return 'load';}})();";
+        try {
+            view.evaluateJavascript(script, result -> {
+                if (token != notificationNavigationSerial || view != webview) return;
+                if ("\"same\"".equals(result)) return; // already in that chat
+                if ("\"clicked\"".equals(result)) {
+                    // A React/Next route transition is asynchronous. Verify it
+                    // landed in the right chat before doing a network load.
+                    view.postDelayed(
+                            () -> verifyNotificationConversation(view, target, token),
+                            1350L);
+                } else {
+                    mainWebViewController.loadUrl(view, target);
+                }
+            });
+        } catch (Exception failure) {
+            Log.w(TAG, "In-page notification navigation unavailable; loading saved route");
+            if (token == notificationNavigationSerial && view == webview) {
+                mainWebViewController.loadUrl(view, target);
+            }
+        }
+    }
+
+    private void verifyNotificationConversation(WebView view, String target, int token) {
+        if (token != notificationNavigationSerial || view != webview) return;
+        if (!activityResumed) {
+            pendingNotificationChat = target;
+            return;
+        }
+        String literal = org.json.JSONObject.quote(target);
+        String script = "(function(){try{"
+                + "var m=window.__mychatgptSiteNotificationMonitor;"
+                + "if(m&&typeof m.isCurrentChat==='function')"
+                + "return !!m.isCurrentChat(" + literal + ");"
+                + "var t=new URL(" + literal + ");"
+                + "return location.origin===t.origin"
+                + "&&location.pathname.replace(/\\/$/,'')===t.pathname;"
+                + "}catch(e){return false;}})();";
+        try {
+            view.evaluateJavascript(script, matched -> {
+                if (token != notificationNavigationSerial || view != webview) return;
+                if (!"true".equals(matched)) {
+                    mainWebViewController.loadUrl(view, target);
+                }
+            });
+        } catch (Exception failure) {
+            if (token == notificationNavigationSerial && view == webview) {
+                mainWebViewController.loadUrl(view, target);
+            }
+        }
+    }
+
+    private void requestAndroidNotificationPermission(boolean forTest) {
+        if (notificationController == null) return;
+        if (notificationController.needsPermission()) {
+            if (forTest) testAfterNotificationPermission = true;
+            ActivityCompat.requestPermissions(this,
+                    new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
+                    REQUEST_NOTIFICATION_PERM);
+        } else if (forTest) {
+            saveTestNotification();
+        }
+    }
+
+    private void sendTestNotification() {
+        if (notificationController == null) return;
+        notificationController.setAndroidEnabled(true);
+        requestAndroidNotificationPermission(true);
+        if (nativeShellController != null) nativeShellController.refreshNotifications();
+    }
+
+    private void saveTestNotification() {
+        if (notificationController == null) return;
+        notificationController.recordTestNotification(
+                webview == null ? null : webview.getUrl());
+        if (nativeShellController != null) nativeShellController.refreshNotifications();
+    }
+
+    /** Exercises web DOM observation, JS bridge, local history and Android posting. */
+    private void testSiteCapture() {
+        if (webview == null
+                || !ChatGptSiteContract.isChatGptWebUrl(webview.getUrl())) {
+            AppToast.makeText(this, "Open a ChatGPT page to test popup capture",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        webview.evaluateJavascript(SiteNotificationMonitor.PROBE_SCRIPT, value -> {
+            if (!"true".equals(value)) {
+                AppToast.makeText(MainActivity.this,
+                        "Site listener unavailable. Reload ChatGPT and retry.",
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /** Simulates the site's unlabeled, animated notification card. */
+    private void testUnmarkedCapture() {
+        if (webview == null || !ChatGptSiteContract.isChatGptWebUrl(webview.getUrl())) {
+            Toast.makeText(this, "Open ChatGPT to test popup capture",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        webview.evaluateJavascript(SiteNotificationMonitor.PROBE_UNMARKED_SCRIPT, result -> {
+            if (!"true".equals(result)) {
+                Toast.makeText(MainActivity.this,
+                        "Popup detector is unavailable. Reload ChatGPT.",
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /** Structural counters only; no chat text, titles or popup bodies. */
+    private void copyMonitorDiagnostics() {
+        if (notificationController == null) return;
+        try {
+            android.content.ClipboardManager clipboard =
+                    (android.content.ClipboardManager)
+                    getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                        "MyChatGPT capture counters",
+                        notificationController.siteMonitorDiagnostics()));
+                Toast.makeText(this, "Capture diagnostics copied",
+                        Toast.LENGTH_SHORT).show();
+            }
+        } catch (Exception ex) {
+            Log.w(TAG, "Could not copy sanitized popup counters", ex);
+        }
     }
 
     @Override
@@ -395,6 +708,54 @@ public class MainActivity extends Activity {
                         if (loadingStateController != null
                                 && loadingStateController.onDomReady()) {
                             transferController.kickPendingSharePipelines();
+                        }
+                    }
+
+                    @Override
+                    public void onSiteMonitorReady() {
+                        if (notificationController != null) {
+                            boolean wasActive = notificationController.isSiteMonitorActive();
+                            notificationController.siteMonitorReady();
+                            if (!wasActive && nativeShellController != null) {
+                                nativeShellController.refreshNotifications();
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onSiteMonitorMetrics(int mutations, int candidates,
+                                                     int floating, int sent,
+                                                     int generating, int completed) {
+                        if (notificationController != null
+                                && notificationController.updateSiteMonitorMetrics(
+                                        mutations, candidates, floating, sent,
+                                        generating, completed)
+                                && nativeShellController != null) {
+                            nativeShellController.refreshNotifications();
+                        }
+                    }
+
+                    @Override
+                    public void onChatResponseCompleted(String url, String turnKey,
+                                                        String chatTitle, String projectName) {
+                        if (notificationController != null) {
+                            long id = notificationController.recordResponseCompletion(
+                                    url, turnKey, chatTitle, projectName);
+                            if (id > 0 && nativeShellController != null) {
+                                nativeShellController.refreshNotifications();
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onSiteNotification(String text, String candidateUrl,
+                                                   String chatTitle, String projectName) {
+                        if (notificationController != null) {
+                            long id = notificationController.recordSiteNotification(
+                                    text, candidateUrl, chatTitle, projectName);
+                            if (id > 0 && nativeShellController != null) {
+                                nativeShellController.refreshNotifications();
+                            }
                         }
                     }
                 });
@@ -450,6 +811,12 @@ public class MainActivity extends Activity {
                 // the very first script execution.
                 WebViewCompat.addDocumentStartJavaScript(
                         webView, ChatGptSiteContract.FOCUS_GUARD_JS, java.util.Collections.singleton("*"));
+                // setupMainWebView is called only for the primary WebView.
+                // Do not compare to the field: during renderer recovery the new
+                // WebView is configured before webview is reassigned.
+                WebViewCompat.addDocumentStartJavaScript(
+                        webView, SiteNotificationMonitor.script(this),
+                        java.util.Collections.singleton("*"));
             }
         } catch (Throwable t) {
             Log.e(TAG, "addDocumentStartJavaScript failed", t);
@@ -577,6 +944,12 @@ public class MainActivity extends Activity {
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
                 super.onPageStarted(v, url, favicon);
                 loadingStateController.onPageStarted(v);
+                if (v == webview && notificationController != null) {
+                    notificationController.resetSiteMonitor();
+                    if (nativeShellController != null) {
+                        nativeShellController.refreshNotifications();
+                    }
+                }
             }
 
             @Override
@@ -608,6 +981,7 @@ public class MainActivity extends Activity {
         // must never run in OAuth/share popups.
         if (v == webview) {
             v.evaluateJavascript(ChatGptSiteContract.PAGE_READY_WATCHER_JS, null);
+            v.evaluateJavascript(SiteNotificationMonitor.script(this), null);
         }
     }
 
@@ -648,14 +1022,14 @@ public class MainActivity extends Activity {
         if (shareBtn != null) {
             shareBtn.setOnClickListener(v -> {
                 dialog.dismiss();
-                Toast.makeText(this, "Loading image to share...", Toast.LENGTH_SHORT).show();
+                AppToast.makeText(this, "Loading image to share...", Toast.LENGTH_SHORT).show();
                 transferController.downloadAndShareImageFile(imageUrl);
             });
         }
         if (downloadBtn != null) {
             downloadBtn.setOnClickListener(v -> {
                 dialog.dismiss();
-                Toast.makeText(this, "Downloading image...", Toast.LENGTH_SHORT).show();
+                AppToast.makeText(this, "Downloading image...", Toast.LENGTH_SHORT).show();
                 transferController.downloadImageToDownloads(imageUrl);
             });
         }
@@ -796,6 +1170,14 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                            int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_NOTIFICATION_PERM) {
+            if (testAfterNotificationPermission) {
+                testAfterNotificationPermission = false;
+                saveTestNotification();
+            }
+            if (nativeShellController != null) nativeShellController.refreshNotifications();
+            return;
+        }
         if (transferController != null
                 && transferController.onRequestPermissionsResult(requestCode, grantResults)) {
             return;
@@ -815,6 +1197,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        activityResumed = false;
         super.onPause();
         // Reaching PAUSE proves this launch was real and interactive — any
         // process death while backgrounded afterwards is NORMAL lifecycle
@@ -853,6 +1236,11 @@ public class MainActivity extends Activity {
         super.onResume();
         if (mainWebViewController != null) mainWebViewController.resume(webview);
         if (popupAuthController != null) popupAuthController.resumeAll();
+        activityResumed = true;
+        dispatchPendingNotificationChat();
+        // Android notification access may have been granted in Settings while
+        // we were backgrounded, or a real push archived by the OS listener.
+        if (nativeShellController != null) nativeShellController.refreshNotifications();
     }
 
     @Override
@@ -902,6 +1290,10 @@ public class MainActivity extends Activity {
         }
         if (nativeShellController != null) {
             nativeShellController.destroy();
+        }
+        NotificationController.observeHistory(null);
+        if (notificationController != null) {
+            notificationController.close();
         }
         if (loadingStateController != null) {
             loadingStateController.destroy();

@@ -47,7 +47,7 @@ public class SettingsActivity extends Activity {
                                 @Override
                                 public void onDismiss(DialogInterface d) {
                                     if (dialog[0] != null && dialog[0].changedWebView()) {
-                                        Toast.makeText(SettingsActivity.this,
+                                        com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(SettingsActivity.this,
                                                 R.string.webview_restart_required,
                                                 Toast.LENGTH_LONG).show();
                                         restartApp();
@@ -178,7 +178,7 @@ public class SettingsActivity extends Activity {
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(i);
         } catch (Exception e) {
-            Toast.makeText(this, "No browser available", Toast.LENGTH_SHORT).show();
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(this, "No browser available", Toast.LENGTH_SHORT).show();
         }
     }
 

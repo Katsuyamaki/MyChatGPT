@@ -109,7 +109,7 @@ public class ShareRelayActivity extends Activity {
                 cb.setPrimaryClip(ClipData.newPlainText("MyChatGPT", text));
                 // Android 13+ shows its own "Copied" overlay already.
                 if (android.os.Build.VERSION.SDK_INT < 33) {
-                    Toast.makeText(this, "Text copied — paste it into MyChatGPT",
+                    com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(this, "Text copied — paste it into MyChatGPT",
                             Toast.LENGTH_LONG).show();
                 }
             }

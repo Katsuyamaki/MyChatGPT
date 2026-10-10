@@ -264,7 +264,7 @@ public final class WebViewManagerDialog extends MaterialAlertDialogBuilder {
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             context.startActivity(i);
         } catch (Throwable t) {
-            Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show();
+            com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show();
         }
     }
 }

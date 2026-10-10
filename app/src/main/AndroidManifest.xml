@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Android 13+: requested only when notifications are enabled in the overlay. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -78,6 +80,19 @@
             android:authorities="${applicationId}.DeveloperModeContentProvider"
             android:exported="false"
             android:enabled="true" />
+
+        <!-- Optional companion-app notification relay. Android binds this only
+             after the user explicitly grants Notification Access. The service
+             filters com.openai.chatgpt BEFORE inspecting notification content. -->
+        <service
+            android:name=".notifications.ChatGptNotificationListenerService"
+            android:label="MyChatGPT · ChatGPT push mirror"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <!-- FileProvider so we can share downloaded images via ACTION_SEND -->
         <provider

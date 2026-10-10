@@ -117,7 +117,7 @@ public final class WebViewUtil {
                 Log.e(TAG, "hookServiceManagerService failed; falling back to default", t);
                 CUSTOM_PROVIDER = null;
                 CURRENT_PROVIDER = DEFAULT_PROVIDER;
-                Toast.makeText(context,
+                com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(context,
                         "Failed to switch WebView: " + t.getMessage(),
                         Toast.LENGTH_LONG).show();
             }
