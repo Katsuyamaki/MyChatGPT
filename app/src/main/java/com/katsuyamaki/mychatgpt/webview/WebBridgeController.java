@@ -22,7 +22,8 @@ public final class WebBridgeController {
 
     public interface Host {
         WebView getMainWebView();
-        void onPageReady();
+        boolean isManagedMainWebView(WebView view);
+        void onPageReady(WebView view);
         void onSiteNotification(String text, String candidateUrl,
                                 String chatTitle, String projectName);
         void onSiteMonitorReady();
@@ -76,8 +77,8 @@ public final class WebBridgeController {
         // hostAllowed() reads WebView URL state, so keep that gate on the UI
         // thread rather than the JavaScript bridge thread.
         activity.runOnUiThread(() -> {
-            if (!hostAllowed()) return;
-            host.onPageReady();
+            if (!hostAllowed() || !host.isManagedMainWebView(hostWebView)) return;
+            host.onPageReady(hostWebView);
         });
     }
 
@@ -86,13 +87,13 @@ public final class WebBridgeController {
      * this intentionally writes the clipboard without an additional toast.
      */
     /**
-     * Site toast bridge. Only the primary ChatGPT document may emit inbox items;
+     * Site toast bridge. Only registered ChatGPT tab documents may emit inbox items;
      * popup/iframe copies of AndroidBridge are never accepted.
      */
     @JavascriptInterface
     public void siteMonitorReady() {
         activity.runOnUiThread(() -> {
-            if (hostWebView != host.getMainWebView()) return;
+            if (!host.isManagedMainWebView(hostWebView)) return;
             if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
             host.onSiteMonitorReady();
         });
@@ -102,7 +103,7 @@ public final class WebBridgeController {
     public void siteNotification(final String text, final String candidateUrl,
                                  final String chatTitle, final String projectName) {
         activity.runOnUiThread(() -> {
-            if (hostWebView != host.getMainWebView()) return;
+            if (!host.isManagedMainWebView(hostWebView)) return;
             if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
             host.onSiteNotification(text, candidateUrl, chatTitle, projectName);
         });
@@ -114,7 +115,7 @@ public final class WebBridgeController {
                                    final int floating, final int sent,
                                    final int generating, final int completed) {
         activity.runOnUiThread(() -> {
-            if (hostWebView != host.getMainWebView()) return;
+            if (!host.isManagedMainWebView(hostWebView)) return;
             if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
             host.onSiteMonitorMetrics(mutations, candidates, floating,
                                       sent, generating, completed);
@@ -126,9 +127,9 @@ public final class WebBridgeController {
     public void chatResponseCompleted(final String url, final String turnKey,
                                       final String chatTitle, final String projectName) {
         activity.runOnUiThread(() -> {
-            if (hostWebView != host.getMainWebView()) return;
+            if (!host.isManagedMainWebView(hostWebView)) return;
             if (!ChatGptSiteContract.isChatGptWebUrl(hostWebView.getUrl())) return;
-            // The active main-frame route must match the reported completion,
+            // The owning tab's main-frame route must match the reported completion,
             // not a stale conversation the WebView navigated away from.
             String live = com.katsuyamaki.mychatgpt.notifications.NotificationController
                     .safeChatUrl(hostWebView.getUrl());
