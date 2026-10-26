@@ -13,7 +13,9 @@ import android.provider.Settings;
 import android.text.TextUtils;
 import android.os.Build;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -45,7 +47,9 @@ public final class NativeShellController {
     private static final String PREFS = "mychatgpt_native_shell";
     private static final String KEY_BACKDROP = "backdrop_opacity_percent";
     private static final String KEY_SURFACE_OPACITY = "chatgpt_surface_opacity_percent";
-    private static final String KEY_CORNER = "controls_corner";
+    private static final String KEY_CORNER = "controls_corner"; // Legacy corner migration.
+    private static final String KEY_POSITION_X = "controls_position_x_fraction";
+    private static final String KEY_POSITION_Y = "controls_position_y_fraction";
     private static final String KEY_UI_SCALE = "ui_scale_percent";
     private static final String KEY_TEXT_SCALE = "text_scale_percent";
 
@@ -66,6 +70,9 @@ public final class NativeShellController {
     private static final int CORNER_TOP_RIGHT = 1;
     private static final int CORNER_BOTTOM_RIGHT = 2;
     private static final int CORNER_BOTTOM_LEFT = 3;
+    private static final int HANDLE_SIZE_DP = 48;
+    private static final int EDGE_MARGIN_DP = 8;
+    private static final int PANEL_GAP_DP = 6;
     private static final int PAGE_HOME = 0;
     private static final int PAGE_TUNE = 1;
     private static final int PAGE_NOTIFICATIONS = 2;
@@ -88,7 +95,6 @@ public final class NativeShellController {
     private final Host host;
     private final SharedPreferences prefs;
 
-    private LinearLayout cluster;
     private LinearLayout panel;
     private FrameLayout menuButton;
     private TextView unreadBadge;
@@ -107,7 +113,9 @@ public final class NativeShellController {
 
     private int backdropPercent;
     private int surfaceOpacityPercent;
-    private int corner;
+    // Normalized coordinates preserve the pin across fold/cover and rotation.
+    private float positionX;
+    private float positionY;
     private int uiScalePercent;
     private int textScalePercent;
 
@@ -116,15 +124,39 @@ public final class NativeShellController {
     private int insetRight;
     private int insetBottom;
 
+    private final int touchSlop;
+    private float touchDownRawX;
+    private float touchDownRawY;
+    private int dragStartLeft;
+    private int dragStartTop;
+    private boolean dragging;
+    private boolean gestureCancelled;
+
+    private final View.OnLayoutChangeListener rootLayoutListener =
+            (view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+                if (right - left != oldRight - oldLeft
+                        || bottom - top != oldBottom - oldTop) {
+                    updateFloatingPlacement();
+                }
+            };
+
     public NativeShellController(Activity activity, FrameLayout root, Host host) {
         this.activity = activity;
         this.root = root;
         this.host = host;
         this.prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        this.touchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
 
         backdropPercent = clamp(prefs.getInt(KEY_BACKDROP, DEFAULT_BACKDROP), 0, 100);
         surfaceOpacityPercent = clamp(prefs.getInt(KEY_SURFACE_OPACITY, DEFAULT_SURFACE_OPACITY), 0, 100);
-        corner = clamp(prefs.getInt(KEY_CORNER, CORNER_TOP_RIGHT), 0, 3);
+        // Preserve the previous corner until the user first drags or resets.
+        int legacyCorner = clamp(prefs.getInt(KEY_CORNER, CORNER_TOP_RIGHT), 0, 3);
+        float defaultX = (legacyCorner == CORNER_TOP_RIGHT
+                || legacyCorner == CORNER_BOTTOM_RIGHT) ? 1f : 0f;
+        float defaultY = (legacyCorner == CORNER_BOTTOM_LEFT
+                || legacyCorner == CORNER_BOTTOM_RIGHT) ? 1f : 0f;
+        positionX = clampFraction(prefs.getFloat(KEY_POSITION_X, defaultX));
+        positionY = clampFraction(prefs.getFloat(KEY_POSITION_Y, defaultY));
         uiScalePercent = clamp(
                 prefs.getInt(KEY_UI_SCALE, DEFAULT_UI_SCALE),
                 MIN_UI_SCALE,
@@ -161,8 +193,7 @@ public final class NativeShellController {
     public void onConfigurationChanged() {
         configureWallpaperWindow();
         applyBackdrop();
-        updatePanelSize();
-        updateClusterPlacement();
+        updateFloatingPlacement();
         applyToMainWebView(host.getMainWebView());
     }
 
@@ -175,13 +206,10 @@ public final class NativeShellController {
     }
 
     public void destroy() {
-        if (cluster != null) {
-            try {
-                root.removeView(cluster);
-            } catch (Throwable ignored) {
-            }
-        }
-        cluster = null;
+        root.removeOnLayoutChangeListener(rootLayoutListener);
+        root.setOnApplyWindowInsetsListener(null);
+        if (panel != null) root.removeView(panel);
+        if (menuButton != null) root.removeView(menuButton);
         panel = null;
         menuButton = null;
         unreadBadge = null;
@@ -196,7 +224,7 @@ public final class NativeShellController {
         notificationOffset = 0;
         showOtherHistory = false;
         showPage(PAGE_NOTIFICATIONS);
-        panel.setVisibility(View.VISIBLE);
+        openPanel();
     }
 
     /** The unread counter and inbox stay in sync with newly captured site toasts. */
@@ -243,17 +271,14 @@ public final class NativeShellController {
     }
 
     private void buildControls() {
-        cluster = new LinearLayout(activity);
-        cluster.setOrientation(LinearLayout.VERTICAL);
-        cluster.setGravity(isRightCorner() ? Gravity.END : Gravity.START);
-        cluster.setElevation(dp(16));
-
+        // The launcher and panel are separate overlays, so expanding the
+        // menu never resizes or displaces the pinned launcher.
         // Compact launcher: the application's own icon replaces the TUNE text.
         menuButton = new FrameLayout(activity);
-        menuButton.setContentDescription("Open MyChatGPT menu");
+        menuButton.setContentDescription("MyChatGPT menu. Drag to move, tap to open.");
+        menuButton.setElevation(dp(16));
         menuButton.setBackground(makeRoundedBackground(
                 Color.argb(225, 30, 30, 30), 24));
-        menuButton.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
         ImageView icon = new ImageView(activity);
         icon.setImageResource(R.mipmap.ic_launcher);
         icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -275,6 +300,8 @@ public final class NativeShellController {
         panel.setBackground(makeRoundedBackground(
                 Color.argb(244, 24, 24, 24), 16));
         panel.setVisibility(View.GONE);
+        panel.setElevation(dp(16));
+        panel.setClickable(true);
 
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
@@ -303,20 +330,25 @@ public final class NativeShellController {
         backButton.setOnClickListener(v -> showPage(PAGE_HOME));
         close.setOnClickListener(v -> panel.setVisibility(View.GONE));
         menuButton.setOnClickListener(v -> {
-            if (panel.getVisibility() == View.VISIBLE) {
-                panel.setVisibility(View.GONE);
-            } else {
-                showPage(PAGE_HOME);
-                panel.setVisibility(View.VISIBLE);
-            }
+            if (closePanelIfOpen()) return;
+            showPage(PAGE_HOME);
+            openPanel();
         });
+        menuButton.setOnTouchListener(this::onMenuTouch);
 
         showPage(PAGE_HOME);
         refreshNotifications();
-        reorderClusterChildren();
-        int insertIndex = Math.min(1, root.getChildCount());
-        root.addView(cluster, insertIndex);
-        updateClusterPlacement();
+
+        // Remain under the page's loading overlay, above the WebView.
+        root.addView(panel, Math.min(1, root.getChildCount()),
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.TOP | Gravity.LEFT));
+        root.addView(menuButton, Math.min(2, root.getChildCount()),
+                new FrameLayout.LayoutParams(dp(HANDLE_SIZE_DP),
+                        dp(HANDLE_SIZE_DP), Gravity.TOP | Gravity.LEFT));
+        updateFloatingPlacement();
     }
 
     private void showPage(int page) {
@@ -333,7 +365,7 @@ public final class NativeShellController {
         if (page == PAGE_TUNE) buildTunePage();
         else if (page == PAGE_NOTIFICATIONS) buildNotificationPage();
         else buildHomePage();
-        updatePanelSize();
+        updatePanelPlacement();
         pageScroll.post(() -> pageScroll.scrollTo(0, 0));
     }
 
@@ -392,7 +424,7 @@ public final class NativeShellController {
         LinearLayout actions = new LinearLayout(activity);
         actions.setOrientation(LinearLayout.HORIZONTAL);
         actions.setPadding(0, dp(6), 0, 0);
-        TextView move = makeButton("MOVE CORNER");
+        TextView move = makeButton("RESET POSITION");
         TextView reload = makeButton("FORCE RELOAD");
         actions.addView(move, new LinearLayout.LayoutParams(0, dp(38), 1f));
         LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, dp(38), 1f);
@@ -405,7 +437,7 @@ public final class NativeShellController {
         resetParams.topMargin = dp(6);
         pageContent.addView(reset, resetParams);
         TextView hint = makeLabel(
-                "UI scale changes the whole page. Text size is independent.", 10f);
+                "Drag the floating icon to pin it anywhere. Tap to open. UI scale changes the page; text size is independent.", 10f);
         hint.setTextColor(Color.LTGRAY);
         hint.setPadding(0, dp(6), 0, 0);
         pageContent.addView(hint);
@@ -430,7 +462,7 @@ public final class NativeShellController {
                 updateLabels();
             }
         });
-        move.setOnClickListener(v -> cycleCorner());
+        move.setOnClickListener(v -> resetPosition());
         reload.setOnClickListener(v -> {
             panel.setVisibility(View.GONE);
             com.katsuyamaki.mychatgpt.notifications.AppToast.makeText(activity, "Refreshing current chat…", Toast.LENGTH_SHORT).show();
@@ -764,20 +796,73 @@ public final class NativeShellController {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(heightDp));
     }
 
-    private void updatePanelSize() {
-        if (panel == null || pageScroll == null) return;
-        int screenWidth = activity.getResources().getDisplayMetrics().widthPixels;
-        int screenHeight = activity.getResources().getDisplayMetrics().heightPixels;
-        int width = Math.min(dp(310), Math.max(dp(180),
-                screenWidth - insetLeft - insetRight - dp(24)));
-        panel.setLayoutParams(new LinearLayout.LayoutParams(
-                width, ViewGroup.LayoutParams.WRAP_CONTENT));
-        int desired = currentPage == PAGE_HOME ? dp(142)
+    private void openPanel() {
+        if (panel == null) return;
+        // Pre-position while invisible so its first visible frame is stable.
+        panel.setVisibility(View.INVISIBLE);
+        updatePanelPlacement();
+        panel.setVisibility(View.VISIBLE);
+    }
+
+    private void updatePanelPlacement() {
+        if (panel == null || menuButton == null || pageScroll == null
+                || panel.getLayoutParams() == null || menuButton.getLayoutParams() == null
+                || root.getWidth() <= 0 || root.getHeight() <= 0) return;
+
+        int margin = dp(EDGE_MARGIN_DP);
+        int safeLeft = clamp(insetLeft + margin, 0, root.getWidth() - 1);
+        int safeTop = clamp(insetTop + margin, 0, root.getHeight() - 1);
+        int safeRight = Math.max(safeLeft + 1, root.getWidth() - insetRight - margin);
+        int safeBottom = Math.max(safeTop + 1, root.getHeight() - insetBottom - margin);
+        int width = Math.min(dp(310), safeRight - safeLeft);
+
+        FrameLayout.LayoutParams handle =
+                (FrameLayout.LayoutParams) menuButton.getLayoutParams();
+        int gap = dp(PANEL_GAP_DP);
+        int belowRoom = Math.max(0,
+                safeBottom - (handle.topMargin + handleSize() + gap));
+        int aboveRoom = Math.max(0, handle.topMargin - gap - safeTop);
+        boolean below = belowRoom >= aboveRoom;
+        int availableHeight = Math.max(1, below ? belowRoom : aboveRoom);
+
+        // Preserve existing per-page scroll behavior but bound it by the
+        // room beside the handle. The header + vertical padding take ~56dp.
+        int desiredScroll = currentPage == PAGE_HOME ? dp(142)
                 : currentPage == PAGE_TUNE ? dp(365) : dp(400);
-        int available = Math.max(dp(110),
-                screenHeight - insetTop - insetBottom - dp(130));
-        pageScroll.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Math.min(desired, available)));
+        int scrollHeight = Math.max(1,
+                Math.min(desiredScroll, availableHeight - dp(56)));
+        LinearLayout.LayoutParams scrollParams =
+                (LinearLayout.LayoutParams) pageScroll.getLayoutParams();
+        if (scrollParams.height != scrollHeight) {
+            scrollParams.height = scrollHeight;
+            pageScroll.setLayoutParams(scrollParams);
+        }
+        panel.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(availableHeight, View.MeasureSpec.AT_MOST));
+        int height = Math.max(1,
+                Math.min(availableHeight, panel.getMeasuredHeight()));
+
+        // Align to the nearer screen edge and never obscure the drag handle.
+        boolean alignLeft = handle.leftMargin + handleSize() / 2
+                < safeLeft + (safeRight - safeLeft) / 2;
+        int left = alignLeft ? handle.leftMargin
+                : handle.leftMargin + handleSize() - width;
+        left = clamp(left, safeLeft, Math.max(safeLeft, safeRight - width));
+        int top = below ? handle.topMargin + handleSize() + gap
+                : handle.topMargin - gap - height;
+        top = clamp(top, safeTop, Math.max(safeTop, safeBottom - height));
+
+        FrameLayout.LayoutParams params =
+                (FrameLayout.LayoutParams) panel.getLayoutParams();
+        if (params.width != width || params.height != height
+                || params.leftMargin != left || params.topMargin != top) {
+            params.width = width;
+            params.height = height;
+            params.leftMargin = left;
+            params.topMargin = top;
+            panel.setLayoutParams(params);
+        }
     }
 
     private LinearLayout makeStepRow(
@@ -900,83 +985,155 @@ public final class NativeShellController {
         return Color.argb(Math.round(oa * 255f), r, g, b);
     }
 
-    private void cycleCorner() {
-        corner = (corner + 1) % 4;
-        prefs.edit().putInt(KEY_CORNER, corner).apply();
-        cluster.setGravity(isRightCorner() ? Gravity.END : Gravity.START);
-        reorderClusterChildren();
-        updateClusterPlacement();
+    private boolean onMenuTouch(View view, MotionEvent event) {
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                touchDownRawX = event.getRawX();
+                touchDownRawY = event.getRawY();
+                FrameLayout.LayoutParams params =
+                        (FrameLayout.LayoutParams) menuButton.getLayoutParams();
+                dragStartLeft = params.leftMargin;
+                dragStartTop = params.topMargin;
+                dragging = false;
+                gestureCancelled = false;
+                return true;
+
+            case MotionEvent.ACTION_POINTER_DOWN:
+                // Ignore secondary pointers rather than jumping on index swap.
+                if (dragging) updateFloatingPlacement();
+                dragging = false;
+                gestureCancelled = true;
+                return true;
+
+            case MotionEvent.ACTION_MOVE:
+                if (gestureCancelled) return true;
+                float dx = event.getRawX() - touchDownRawX;
+                float dy = event.getRawY() - touchDownRawY;
+                if (!dragging && dx * dx + dy * dy > touchSlop * touchSlop) {
+                    dragging = true;
+                    closePanelIfOpen();
+                }
+                if (dragging) {
+                    setHandlePosition(dragStartLeft + Math.round(dx),
+                            dragStartTop + Math.round(dy));
+                }
+                return true;
+
+            case MotionEvent.ACTION_UP:
+                if (!gestureCancelled) {
+                    if (dragging) {
+                        setHandlePosition(
+                                dragStartLeft + Math.round(event.getRawX() - touchDownRawX),
+                                dragStartTop + Math.round(event.getRawY() - touchDownRawY));
+                        saveHandlePosition();
+                    } else {
+                        view.performClick();
+                    }
+                }
+                dragging = false;
+                gestureCancelled = false;
+                return true;
+
+            case MotionEvent.ACTION_CANCEL:
+                if (dragging) updateFloatingPlacement();
+                dragging = false;
+                gestureCancelled = false;
+                return true;
+
+            default:
+                return true;
+        }
     }
 
-    private void reorderClusterChildren() {
-        if (cluster == null || panel == null || menuButton == null) return;
-        int panelVisibility = panel.getVisibility();
-        cluster.removeAllViews();
+    private void resetPosition() {
+        positionX = 1f;
+        positionY = 0f;
+        persistPosition();
+        closePanelIfOpen();
+        updateFloatingPlacement();
+    }
 
-        boolean bottom = corner == CORNER_BOTTOM_LEFT
-                || corner == CORNER_BOTTOM_RIGHT;
-        if (bottom) {
-            cluster.addView(panel);
-            LinearLayout.LayoutParams gap =
-                    (LinearLayout.LayoutParams) menuButton.getLayoutParams();
-            gap.topMargin = dp(6);
-            gap.bottomMargin = 0;
-            menuButton.setLayoutParams(gap);
-            cluster.addView(menuButton);
-        } else {
-            cluster.addView(menuButton);
-            LinearLayout.LayoutParams panelParams =
-                    (LinearLayout.LayoutParams) panel.getLayoutParams();
-            panelParams.topMargin = dp(6);
-            panelParams.bottomMargin = 0;
-            panel.setLayoutParams(panelParams);
-            cluster.addView(panel);
+    private void saveHandlePosition() {
+        if (menuButton == null) return;
+        FrameLayout.LayoutParams params =
+                (FrameLayout.LayoutParams) menuButton.getLayoutParams();
+        int leftRange = maxHandleLeft() - minHandleLeft();
+        int topRange = maxHandleTop() - minHandleTop();
+        // When resized into a zero-travel viewport, retain saved fractions.
+        if (leftRange > 0) {
+            positionX = clampFraction(
+                    (params.leftMargin - minHandleLeft()) / (float) leftRange);
         }
-        panel.setVisibility(panelVisibility);
+        if (topRange > 0) {
+            positionY = clampFraction(
+                    (params.topMargin - minHandleTop()) / (float) topRange);
+        }
+        persistPosition();
+    }
+
+    private void persistPosition() {
+        prefs.edit().putFloat(KEY_POSITION_X, positionX)
+                .putFloat(KEY_POSITION_Y, positionY).apply();
     }
 
     private void installInsetTracking() {
-        root.setOnApplyWindowInsetsListener((v, insets) -> {
+        root.addOnLayoutChangeListener(rootLayoutListener);
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
             insetLeft = insets.getSystemWindowInsetLeft();
             insetTop = insets.getSystemWindowInsetTop();
             insetRight = insets.getSystemWindowInsetRight();
             insetBottom = insets.getSystemWindowInsetBottom();
-            updateClusterPlacement();
+            updateFloatingPlacement();
             return insets;
         });
         root.requestApplyInsets();
     }
 
-    private void updateClusterPlacement() {
-        if (cluster == null) return;
+    private int handleSize() {
+        return menuButton != null && menuButton.getWidth() > 0
+                ? menuButton.getWidth() : dp(HANDLE_SIZE_DP);
+    }
 
-        int gravity;
-        switch (corner) {
-            case CORNER_TOP_LEFT:
-                gravity = Gravity.TOP | Gravity.START;
-                break;
-            case CORNER_BOTTOM_RIGHT:
-                gravity = Gravity.BOTTOM | Gravity.END;
-                break;
-            case CORNER_BOTTOM_LEFT:
-                gravity = Gravity.BOTTOM | Gravity.START;
-                break;
-            case CORNER_TOP_RIGHT:
-            default:
-                gravity = Gravity.TOP | Gravity.END;
-                break;
-        }
+    private int minHandleLeft() {
+        return clamp(insetLeft + dp(EDGE_MARGIN_DP), 0,
+                Math.max(0, root.getWidth() - handleSize()));
+    }
 
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                gravity);
-        int margin = dp(8);
-        params.leftMargin = insetLeft + margin;
-        params.topMargin = insetTop + margin;
-        params.rightMargin = insetRight + margin;
-        params.bottomMargin = insetBottom + margin;
-        cluster.setLayoutParams(params);
+    private int maxHandleLeft() {
+        return Math.max(minHandleLeft(),
+                root.getWidth() - insetRight - dp(EDGE_MARGIN_DP) - handleSize());
+    }
+
+    private int minHandleTop() {
+        return clamp(insetTop + dp(EDGE_MARGIN_DP), 0,
+                Math.max(0, root.getHeight() - handleSize()));
+    }
+
+    private int maxHandleTop() {
+        return Math.max(minHandleTop(),
+                root.getHeight() - insetBottom - dp(EDGE_MARGIN_DP) - handleSize());
+    }
+
+    private void setHandlePosition(int left, int top) {
+        if (menuButton == null || root.getWidth() <= 0 || root.getHeight() <= 0) return;
+        left = clamp(left, minHandleLeft(), maxHandleLeft());
+        top = clamp(top, minHandleTop(), maxHandleTop());
+        FrameLayout.LayoutParams params =
+                (FrameLayout.LayoutParams) menuButton.getLayoutParams();
+        if (params.leftMargin == left && params.topMargin == top) return;
+        params.leftMargin = left;
+        params.topMargin = top;
+        menuButton.setLayoutParams(params);
+    }
+
+    private void updateFloatingPlacement() {
+        if (menuButton == null || root.getWidth() <= 0 || root.getHeight() <= 0) return;
+        int left = minHandleLeft() + Math.round(
+                (maxHandleLeft() - minHandleLeft()) * positionX);
+        int top = minHandleTop() + Math.round(
+                (maxHandleTop() - minHandleTop()) * positionY);
+        setHandlePosition(left, top);
+        updatePanelPlacement();
     }
 
     private void updateLabels() {
@@ -1024,13 +1181,14 @@ public final class NativeShellController {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
     }
 
-    private boolean isRightCorner() {
-        return corner == CORNER_TOP_RIGHT || corner == CORNER_BOTTOM_RIGHT;
-    }
-
     private int dp(int value) {
         float density = activity.getResources().getDisplayMetrics().density;
         return Math.round(value * density);
+    }
+
+    private static float clampFraction(float value) {
+        if (Float.isNaN(value) || Float.isInfinite(value)) return 0f;
+        return Math.max(0f, Math.min(1f, value));
     }
 
     private static int clamp(int value, int min, int max) {
