@@ -56,6 +56,7 @@ import androidx.webkit.WebViewCompat;
 
 import com.katsuyamaki.mychatgpt.webview.CrashTracker;
 import com.katsuyamaki.mychatgpt.webview.MainWebViewController;
+import com.katsuyamaki.mychatgpt.webview.ChatTabsController;
 import com.katsuyamaki.mychatgpt.webview.LoadingStateController;
 import com.katsuyamaki.mychatgpt.webview.PopupAuthController;
 import com.katsuyamaki.mychatgpt.webview.TransferController;
@@ -91,6 +92,7 @@ public class MainActivity extends Activity {
     ViewGroup rootLayout;
     private LoadingStateController loadingStateController;
     private MainWebViewController mainWebViewController;
+    private ChatTabsController chatTabs;
     private PopupAuthController popupAuthController;
     private TransferController transferController;
     private NativeShellController nativeShellController;
@@ -315,6 +317,39 @@ public class MainActivity extends Activity {
                 });
         loadingStateController =
                 new LoadingStateController(this, rootLayout);
+        chatTabs = new ChatTabsController(
+                this, (FrameLayout) rootLayout, webview, new ChatTabsController.Host() {
+                    @Override
+                    public void setupWebView(WebView view) {
+                        MainActivity.this.setupMainWebView(view);
+                    }
+
+                    @Override
+                    public void loadUrl(WebView view, String url) {
+                        mainWebViewController.loadUrl(view, url);
+                    }
+
+                    @Override
+                    public void onTabSelected(WebView view, boolean ready) {
+                        // Cancel any pending SPA navigation from the old tab.
+                        webview = view;
+                        ++notificationNavigationSerial;
+                        pendingNotificationChat = null;
+                        if (nativeShellController != null) {
+                            nativeShellController.applyToMainWebView(view);
+                            nativeShellController.refreshTabs();
+                        }
+                        if (loadingStateController != null) {
+                            if (ready) loadingStateController.onDomReady();
+                            else loadingStateController.showForRetry();
+                        }
+                    }
+
+                    @Override
+                    public void destroyWebView(WebView view) {
+                        mainWebViewController.destroyMainWebView(view);
+                    }
+                });
         nativeShellController = new NativeShellController(
                 this,
                 (FrameLayout) rootLayout,
@@ -369,6 +404,36 @@ public class MainActivity extends Activity {
                     public void copyMonitorDiagnostics() {
                         MainActivity.this.copyMonitorDiagnostics();
                     }
+
+                    @Override
+                    public List<ChatTabsController.TabInfo> getTabs() {
+                        return chatTabs.snapshot();
+                    }
+
+                    @Override
+                    public boolean addTab() {
+                        return chatTabs.addTab(ChatGptSiteContract.MAIN_URL);
+                    }
+
+                    @Override
+                    public void selectTab(String id) {
+                        chatTabs.selectTab(id);
+                    }
+
+                    @Override
+                    public void closeTab(String id) {
+                        chatTabs.closeTab(id);
+                    }
+
+                    @Override
+                    public void renameTab(String id, String title) {
+                        chatTabs.renameTab(id, title);
+                    }
+
+                    @Override
+                    public void moveTab(String id, int direction) {
+                        chatTabs.moveTab(id, direction);
+                    }
                 });
         loadingStateController.initializePresentation();
         NotificationController.observeHistory(notificationHistoryChanged);
@@ -403,13 +468,20 @@ public class MainActivity extends Activity {
         // the second, visibly reloading the previous/current conversation.
         boolean restoredFromState = false;
         if (chatFromNotification != null) {
-            mainWebViewController.loadUrl(webview, chatFromNotification);
+            // A cold Android notification launch also reuses/open a dedicated
+            // tab rather than clobbering the selected saved conversation.
+            if (!chatTabs.openChatInTab(chatFromNotification)) {
+                // At the limit: retain the previous single-tab fallback.
+                mainWebViewController.loadUrl(webview, chatFromNotification);
+                chatTabs.markNavigationStarted(webview);
+            }
         } else {
             restoredFromState =
                     mainWebViewController.restoreNavigationState(webview, savedInstanceState);
             if (!restoredFromState) {
-                mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
+                mainWebViewController.loadUrl(webview, chatTabs.getStartupUrl());
             }
+            chatTabs.markNavigationStarted(webview);
             if (launchedFromNotification) {
                 nativeShellController.showNotificationsPage();
             }
@@ -540,6 +612,9 @@ public class MainActivity extends Activity {
             pendingNotificationChat = target;
             return;
         }
+        // Preserve existing working sessions when following a notification.
+        // A full tab strip falls back to the original SPA navigation.
+        if (chatTabs != null && chatTabs.openChatInTab(target)) return;
         final WebView view = webview;
         final int token = ++notificationNavigationSerial;
         // A new/cold WebView cannot respond to evaluateJavascript reliably.
@@ -704,8 +779,14 @@ public class MainActivity extends Activity {
                     }
 
                     @Override
-                    public void onPageReady() {
-                        if (loadingStateController != null
+                    public boolean isManagedMainWebView(WebView view) {
+                        return chatTabs != null && chatTabs.contains(view);
+                    }
+
+                    @Override
+                    public void onPageReady(WebView view) {
+                        if (chatTabs != null) chatTabs.onPageReady(view);
+                        if (view == webview && loadingStateController != null
                                 && loadingStateController.onDomReady()) {
                             transferController.kickPendingSharePipelines();
                         }
@@ -837,7 +918,16 @@ public class MainActivity extends Activity {
 
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
-                loadingStateController.onProgressChanged(newProgress);
+                if (view == MainActivity.this.webview) {
+                    loadingStateController.onProgressChanged(newProgress);
+                }
+            }
+
+            @Override
+            public void onReceivedTitle(WebView view, String title) {
+                super.onReceivedTitle(view, title);
+                if (chatTabs != null) chatTabs.onTitleChanged(view, title);
+                if (nativeShellController != null) nativeShellController.refreshTabs();
             }
 
             @Override
@@ -891,7 +981,7 @@ public class MainActivity extends Activity {
                 // Legacy callback (API < 23) fires for the main frame only.
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
                     mainWebViewController.onMainFrameLoadSettled(view);
-                    showOfflineDialog();
+                    if (view == MainActivity.this.webview) showOfflineDialog();
                 }
             }
 
@@ -904,7 +994,7 @@ public class MainActivity extends Activity {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                         && request.isForMainFrame()) {
                     mainWebViewController.onMainFrameLoadSettled(view);
-                    showOfflineDialog();
+                    if (view == MainActivity.this.webview) showOfflineDialog();
                 }
             }
 
@@ -913,29 +1003,25 @@ public class MainActivity extends Activity {
                                                android.webkit.RenderProcessGoneDetail detail) {
                 // Renderer death (OOM / driver crash): rebuild the WebView in
                 // place instead of letting the whole process die.
-                boolean wasMain = (view == webview);
-                // didCrash()==true → renderer crashed; false → OS killed it
-                // for memory pressure (the more common case on resume from
-                // task manager).
+                boolean isTab = chatTabs != null && chatTabs.contains(view);
+                boolean wasMain = isTab && chatTabs.isActive(view);
                 boolean didCrash = (detail != null) && detail.didCrash();
                 String reasonStr = didCrash ? "CRASH" : "OOM_KILL";
-                Log.e(TAG, "WebView renderer gone; recreating WebView (main=" + wasMain + ", reason=" + reasonStr + ")");
-                if (wasMain) {
-                    loadingStateController.resetInitialLoad();
-                    // Don't immediately show the loading overlay — let
-                    // onPageStarted's 200ms-delayed show handle it. If the
-                    // page reloads from cache within that window (typical on
-                    // resume after Android killed the renderer in the
-                    // background), the overlay never shows at all and the
-                    // user just sees a brief black WebView instead of the
-                    // full loading-screen flash. Fixes the "brief black
-                    // screen on resume from task manager" report (present
-                    // since the official v6.24 release).
-                    webview = mainWebViewController.recreateMainWebView(
-                            webview, MainActivity.this::setupMainWebView);
-                    mainWebViewController.loadUrl(webview, ChatGptSiteContract.MAIN_URL);
-                } else {
-                    if (popupAuthController != null) popupAuthController.removePopup(view);
+                Log.e(TAG, "WebView renderer gone; recovering tab=" + isTab
+                        + ", selected=" + wasMain + ", reason=" + reasonStr);
+                if (isTab) {
+                    String destination = chatTabs.savedUrlFor(view);
+                    if (wasMain) {
+                        // Keep the inherited delayed overlay on renderer recovery.
+                        loadingStateController.resetInitialLoad();
+                    }
+                    WebView fresh = mainWebViewController.recreateMainWebView(
+                            view, MainActivity.this::setupMainWebView);
+                    chatTabs.replaceAfterRendererGone(view, fresh);
+                    if (wasMain) webview = fresh;
+                    mainWebViewController.loadUrl(fresh, destination);
+                } else if (popupAuthController != null) {
+                    popupAuthController.removePopup(view);
                 }
                 return true;
             }
@@ -943,8 +1029,9 @@ public class MainActivity extends Activity {
             @Override
             public void onPageStarted(WebView v, String url, Bitmap favicon) {
                 super.onPageStarted(v, url, favicon);
-                loadingStateController.onPageStarted(v);
-                if (v == webview && notificationController != null) {
+                if (chatTabs != null) chatTabs.onPageStarted(v);
+                if (v == MainActivity.this.webview) loadingStateController.onPageStarted(v);
+                if (v == MainActivity.this.webview && notificationController != null) {
                     notificationController.resetSiteMonitor();
                     if (nativeShellController != null) {
                         nativeShellController.refreshNotifications();
@@ -959,14 +1046,18 @@ public class MainActivity extends Activity {
                 CrashTracker.reset();
                 CookieManager.getInstance().flush();
                 injectAllOverrides(v);
-                if (v == webview) {
+                if (chatTabs != null && chatTabs.contains(v)) {
+                    chatTabs.onPageFinished(v, url);
                     mainWebViewController.onMainFrameLoadSettled(v);
                     if (nativeShellController != null) {
                         nativeShellController.onPageFinished(v);
+                        nativeShellController.refreshTabs();
                     }
                 }
-                transferController.kickPendingSharePipelines();
-                loadingStateController.onPageFinished(v);
+                if (v == MainActivity.this.webview) {
+                    transferController.kickPendingSharePipelines();
+                    loadingStateController.onPageFinished(v);
+                }
             }
 
         });
@@ -979,7 +1070,7 @@ public class MainActivity extends Activity {
         // support: starts late (page already rendered) but then usually finds
         // the markers on its very first tick. MAIN WebView only — the watcher
         // must never run in OAuth/share popups.
-        if (v == webview) {
+        if (chatTabs != null && chatTabs.contains(v)) {
             v.evaluateJavascript(ChatGptSiteContract.PAGE_READY_WATCHER_JS, null);
             v.evaluateJavascript(SiteNotificationMonitor.script(this), null);
         }
@@ -1214,7 +1305,12 @@ public class MainActivity extends Activity {
         // Pause JS timers/layout for all our WebViews while backgrounded —
         // previously a streaming chat kept running (and draining battery) in
         // the background.
-        if (mainWebViewController != null) mainWebViewController.pause(webview);
+        if (chatTabs != null && mainWebViewController != null) {
+            chatTabs.persist();
+            for (WebView view : chatTabs.loadedViews()) mainWebViewController.pause(view);
+        } else if (mainWebViewController != null) {
+            mainWebViewController.pause(webview);
+        }
         if (popupAuthController != null) popupAuthController.pauseAll();
         CookieManager.getInstance().flush();
     }
@@ -1226,6 +1322,7 @@ public class MainActivity extends Activity {
         // to (configuration-driven recreation, memory-pressure activity
         // destroy, process death). onCreate's restore path uses it to
         // resume the open conversation instead of the homepage.
+        if (chatTabs != null) chatTabs.persist();
         if (mainWebViewController != null) {
             mainWebViewController.saveNavigationState(webview, outState);
         }
@@ -1234,7 +1331,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (mainWebViewController != null) mainWebViewController.resume(webview);
+        if (chatTabs != null && mainWebViewController != null) {
+            for (WebView view : chatTabs.loadedViews()) mainWebViewController.resume(view);
+        } else if (mainWebViewController != null) {
+            mainWebViewController.resume(webview);
+        }
         if (popupAuthController != null) popupAuthController.resumeAll();
         activityResumed = true;
         dispatchPendingNotificationChat();
@@ -1259,6 +1360,11 @@ public class MainActivity extends Activity {
         }
         if (nativeShellController != null) {
             nativeShellController.onConfigurationChanged();
+            if (chatTabs != null) {
+                for (WebView view : chatTabs.loadedViews()) {
+                    nativeShellController.applyToMainWebView(view);
+                }
+            }
         }
     }
 
@@ -1298,7 +1404,10 @@ public class MainActivity extends Activity {
         if (loadingStateController != null) {
             loadingStateController.destroy();
         }
-        if (mainWebViewController != null) {
+        if (chatTabs != null) {
+            chatTabs.destroyAll();
+            chatTabs = null;
+        } else if (mainWebViewController != null) {
             mainWebViewController.destroyMainWebView(webview);
         } else if (webview != null) {
             try {

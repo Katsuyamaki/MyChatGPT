@@ -22,6 +22,7 @@ import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.webkit.WebView;
 import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.LinearLayout;
@@ -31,6 +32,7 @@ import android.widget.Toast;
 
 import com.katsuyamaki.mychatgpt.R;
 import com.katsuyamaki.mychatgpt.site.ChatGptSiteContract;
+import com.katsuyamaki.mychatgpt.webview.ChatTabsController;
 import com.katsuyamaki.mychatgpt.notifications.NotificationController;
 import com.katsuyamaki.mychatgpt.notifications.NotificationStore;
 
@@ -76,6 +78,7 @@ public final class NativeShellController {
     private static final int PAGE_HOME = 0;
     private static final int PAGE_TUNE = 1;
     private static final int PAGE_NOTIFICATIONS = 2;
+    private static final int PAGE_TABS = 3;
     private static final int PAGE_SIZE = 30;
 
     public interface Host {
@@ -88,6 +91,12 @@ public final class NativeShellController {
         void testSiteCapture();
         void testUnmarkedCapture();
         void copyMonitorDiagnostics();
+        List<ChatTabsController.TabInfo> getTabs();
+        boolean addTab();
+        void selectTab(String id);
+        void closeTab(String id);
+        void renameTab(String id, String title);
+        void moveTab(String id, int direction);
     }
 
     private final Activity activity;
@@ -184,7 +193,8 @@ public final class NativeShellController {
     }
 
     public void onPageFinished(WebView webView) {
-        if (webView == null || webView != host.getMainWebView()) return;
+        // Activity only forwards managed chat tabs, never popup WebViews.
+        if (webView == null) return;
         webView.setBackgroundColor(Color.TRANSPARENT);
         webView.evaluateJavascript(ChatGptSiteContract.WALLPAPER_TRANSPARENCY_JS, null);
         applyUiScale(webView);
@@ -239,6 +249,16 @@ public final class NativeShellController {
             int previousScroll = pageScroll.getScrollY();
             buildNotificationPage();
             pageScroll.post(() -> pageScroll.scrollTo(0, previousScroll));
+        }
+    }
+
+    /** Rebuild the open tab picker when titles or routes change. */
+    public void refreshTabs() {
+        if (currentPage == PAGE_TABS && pageScroll != null && panel != null
+                && panel.getVisibility() == View.VISIBLE) {
+            int scroll = pageScroll.getScrollY();
+            buildTabsPage();
+            pageScroll.post(() -> pageScroll.scrollTo(0, scroll));
         }
     }
 
@@ -361,9 +381,11 @@ public final class NativeShellController {
         textScaleLabel = null;
         backButton.setVisibility(page == PAGE_HOME ? View.INVISIBLE : View.VISIBLE);
         headerTitle.setText(page == PAGE_TUNE ? "Tune"
-                : page == PAGE_NOTIFICATIONS ? "Notifications" : "MyChatGPT");
+                : page == PAGE_NOTIFICATIONS ? "Notifications"
+                : page == PAGE_TABS ? "Chat tabs" : "MyChatGPT");
         if (page == PAGE_TUNE) buildTunePage();
         else if (page == PAGE_NOTIFICATIONS) buildNotificationPage();
+        else if (page == PAGE_TABS) buildTabsPage();
         else buildHomePage();
         updatePanelPlacement();
         pageScroll.post(() -> pageScroll.scrollTo(0, 0));
@@ -374,8 +396,15 @@ public final class NativeShellController {
         intro.setPadding(dp(4), 0, 0, dp(10));
         pageContent.addView(intro);
 
+        int tabCount = host.getTabs().size();
+        TextView tabs = makeButton("TABS  ·  " + tabCount + " open sessions");
+        pageContent.addView(tabs, fullWidthButton(45));
+        tabs.setOnClickListener(v -> showPage(PAGE_TABS));
+
         TextView tune = makeButton("TUNE  ·  Appearance and layout");
-        pageContent.addView(tune, fullWidthButton(45));
+        LinearLayout.LayoutParams tuneParams = fullWidthButton(45);
+        tuneParams.topMargin = dp(8);
+        pageContent.addView(tune, tuneParams);
         tune.setOnClickListener(v -> showPage(PAGE_TUNE));
 
         NotificationController notifications = host.getNotificationController();
@@ -389,6 +418,149 @@ public final class NativeShellController {
             showOtherHistory = false;
             showPage(PAGE_NOTIFICATIONS);
         });
+    }
+
+    private void buildTabsPage() {
+        pageContent.removeAllViews();
+        List<ChatTabsController.TabInfo> tabs = host.getTabs();
+
+        TextView add = makeButton("+ NEW CHAT TAB  ·  " + tabs.size()
+                + "/" + ChatTabsController.MAX_TABS);
+        pageContent.addView(add, fullWidthButton(42));
+        boolean hasRoom = tabs.size() < ChatTabsController.MAX_TABS;
+        add.setEnabled(hasRoom);
+        add.setAlpha(hasRoom ? 1f : 0.4f);
+        add.setOnClickListener(v -> {
+            if (host.addTab()) {
+                // Show the new blank chat immediately. The other tab stays live.
+                panel.setVisibility(View.GONE);
+            } else {
+                Toast.makeText(activity, "Five tabs maximum", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        TextView hint = makeLabel(
+                "Tap a chat to switch instantly. EDIT renames it; arrows change order.", 10f);
+        hint.setTextColor(Color.LTGRAY);
+        hint.setPadding(dp(3), dp(10), dp(3), dp(8));
+        pageContent.addView(hint, fullWidthWrap());
+
+        for (int i = 0; i < tabs.size(); i++) {
+            final ChatTabsController.TabInfo tab = tabs.get(i);
+            LinearLayout item = new LinearLayout(activity);
+            item.setOrientation(LinearLayout.VERTICAL);
+            item.setPadding(dp(7), dp(7), dp(7), dp(7));
+            item.setBackground(makeRoundedBackground(tab.active
+                    ? Color.rgb(39, 76, 101) : Color.argb(200, 45, 45, 45), 10));
+            LinearLayout.LayoutParams itemParams = fullWidthWrap();
+            itemParams.bottomMargin = dp(7);
+            pageContent.addView(item, itemParams);
+
+            TextView name = makeLabel((tab.active ? "●  " : "     ") + tab.title, 13f);
+            name.setTypeface(null, android.graphics.Typeface.BOLD);
+            name.setGravity(Gravity.CENTER_VERTICAL | Gravity.LEFT);
+            name.setMinHeight(dp(36));
+            name.setSingleLine(true);
+            name.setEllipsize(TextUtils.TruncateAt.END);
+            name.setContentDescription("Open " + tab.title);
+            item.addView(name, fullWidthWrap());
+            name.setOnClickListener(v -> {
+                host.selectTab(tab.id);
+                panel.setVisibility(View.GONE);
+            });
+
+            TextView status = makeLabel(tab.active ? "CURRENT SESSION"
+                    : tab.warm ? "LOADED · READY TO SWITCH"
+                    : "SAVED · OPENS ON FIRST USE", 10f);
+            status.setTextColor(Color.LTGRAY);
+            status.setPadding(dp(4), dp(0), 0, dp(6));
+            item.addView(status, fullWidthWrap());
+
+            LinearLayout actions = new LinearLayout(activity);
+            actions.setOrientation(LinearLayout.HORIZONTAL);
+            TextView up = makeButton("↑");
+            TextView down = makeButton("↓");
+            TextView rename = makeButton("EDIT");
+            TextView close = makeButton("×");
+            actions.addView(up, new LinearLayout.LayoutParams(dp(42), dp(34)));
+            LinearLayout.LayoutParams downParams =
+                    new LinearLayout.LayoutParams(dp(42), dp(34));
+            downParams.leftMargin = dp(5);
+            actions.addView(down, downParams);
+            LinearLayout.LayoutParams renameParams =
+                    new LinearLayout.LayoutParams(0, dp(34), 1f);
+            renameParams.leftMargin = dp(5);
+            actions.addView(rename, renameParams);
+            LinearLayout.LayoutParams closeParams =
+                    new LinearLayout.LayoutParams(dp(42), dp(34));
+            closeParams.leftMargin = dp(5);
+            actions.addView(close, closeParams);
+            item.addView(actions, fullWidthWrap());
+
+            up.setEnabled(i > 0);
+            down.setEnabled(i < tabs.size() - 1);
+            close.setEnabled(tabs.size() > 1);
+            up.setAlpha(i > 0 ? 1f : 0.3f);
+            down.setAlpha(i < tabs.size() - 1 ? 1f : 0.3f);
+            close.setAlpha(tabs.size() > 1 ? 1f : 0.3f);
+            up.setContentDescription("Move " + tab.title + " up");
+            down.setContentDescription("Move " + tab.title + " down");
+            rename.setContentDescription("Rename " + tab.title);
+            close.setContentDescription("Close " + tab.title);
+
+            up.setOnClickListener(v -> {
+                host.moveTab(tab.id, -1);
+                refreshTabs();
+            });
+            down.setOnClickListener(v -> {
+                host.moveTab(tab.id, 1);
+                refreshTabs();
+            });
+            rename.setOnClickListener(v -> showRenameTabDialog(tab));
+            close.setOnClickListener(v -> showCloseTabDialog(tab));
+        }
+
+        TextView footer = makeLabel(
+                "Open tabs retain their live WebViews while the app runs. After a process restart, saved chats load when selected. Closing a tab discards its local unsent draft.", 10f);
+        footer.setTextColor(Color.LTGRAY);
+        footer.setPadding(dp(3), dp(4), dp(3), dp(6));
+        pageContent.addView(footer, fullWidthWrap());
+        updatePanelPlacement();
+    }
+
+    private void showRenameTabDialog(ChatTabsController.TabInfo tab) {
+        EditText input = new EditText(activity);
+        input.setSingleLine(true);
+        input.setText(tab.title);
+        input.selectAll();
+        input.setHint("Tab name");
+        int pad = dp(16);
+        FrameLayout wrap = new FrameLayout(activity);
+        wrap.setPadding(pad, dp(6), pad, dp(6));
+        wrap.addView(input, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        new androidx.appcompat.app.AlertDialog.Builder(activity)
+                .setTitle("Rename chat tab")
+                .setView(wrap)
+                .setPositiveButton("SAVE", (dialog, which) -> {
+                    host.renameTab(tab.id, input.getText().toString());
+                    refreshTabs();
+                })
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void showCloseTabDialog(ChatTabsController.TabInfo tab) {
+        new androidx.appcompat.app.AlertDialog.Builder(activity)
+                .setTitle("Close " + tab.title + "?")
+                .setMessage("Its live page and any unsent text will be discarded. The ChatGPT conversation remains in your account.")
+                .setPositiveButton("CLOSE TAB", (dialog, which) -> {
+                    host.closeTab(tab.id);
+                    refreshTabs();
+                })
+                .setNegativeButton("CANCEL", null)
+                .show();
     }
 
     private void buildTunePage() {
@@ -827,8 +999,9 @@ public final class NativeShellController {
 
         // Preserve existing per-page scroll behavior but bound it by the
         // room beside the handle. The header + vertical padding take ~56dp.
-        int desiredScroll = currentPage == PAGE_HOME ? dp(142)
-                : currentPage == PAGE_TUNE ? dp(365) : dp(400);
+        int desiredScroll = currentPage == PAGE_HOME ? dp(200)
+                : currentPage == PAGE_TUNE ? dp(365)
+                : currentPage == PAGE_TABS ? dp(420) : dp(400);
         int scrollHeight = Math.max(1,
                 Math.min(desiredScroll, availableHeight - dp(56)));
         LinearLayout.LayoutParams scrollParams =
