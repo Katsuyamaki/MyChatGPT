@@ -468,13 +468,20 @@ public class MainActivity extends Activity {
         // the second, visibly reloading the previous/current conversation.
         boolean restoredFromState = false;
         if (chatFromNotification != null) {
-            mainWebViewController.loadUrl(webview, chatFromNotification);
+            // A cold Android notification launch also reuses/open a dedicated
+            // tab rather than clobbering the selected saved conversation.
+            if (!chatTabs.openChatInTab(chatFromNotification)) {
+                // At the limit: retain the previous single-tab fallback.
+                mainWebViewController.loadUrl(webview, chatFromNotification);
+                chatTabs.markNavigationStarted(webview);
+            }
         } else {
             restoredFromState =
                     mainWebViewController.restoreNavigationState(webview, savedInstanceState);
             if (!restoredFromState) {
                 mainWebViewController.loadUrl(webview, chatTabs.getStartupUrl());
             }
+            chatTabs.markNavigationStarted(webview);
             if (launchedFromNotification) {
                 nativeShellController.showNotificationsPage();
             }
