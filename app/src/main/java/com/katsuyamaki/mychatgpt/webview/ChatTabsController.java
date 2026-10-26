@@ -70,6 +70,7 @@ public final class ChatTabsController {
         String url = ChatGptSiteContract.MAIN_URL;
         WebView view;
         boolean ready;
+        boolean navigationStarted;
 
         Tab(String id) { this.id = id; }
     }
@@ -157,7 +158,15 @@ public final class ChatTabsController {
     public boolean selectTab(String id) {
         Tab target = find(id);
         if (target == null) return false;
-        if (target.id.equals(activeId)) return true;
+        if (target.id.equals(activeId)) {
+            // On a cold notification launch, the layout WebView may be
+            // registered but intentionally not loaded yet.
+            if (target.view != null && !target.navigationStarted) {
+                target.navigationStarted = true;
+                host.loadUrl(target.view, target.url);
+            }
+            return true;
+        }
 
         Tab current = find(activeId);
         if (current != null && current.view != null) {
@@ -186,8 +195,12 @@ public final class ChatTabsController {
         host.onTabSelected(target.view, target.ready);
         target.view.requestFocus();
 
-        // loadUrl is deliberately NOT called when returning to a warm tab.
-        if (fresh) host.loadUrl(target.view, target.url);
+        // Returning to an already-started WebView must never navigate.
+        // A layout WebView deferred by a cold deep-link does need its first load.
+        if (!target.navigationStarted) {
+            target.navigationStarted = true;
+            host.loadUrl(target.view, target.url);
+        }
         persist();
         return true;
     }
@@ -247,7 +260,15 @@ public final class ChatTabsController {
 
     public void onPageStarted(WebView view) {
         Tab tab = findByView(view);
-        if (tab != null) tab.ready = false;
+        if (tab != null) {
+            tab.ready = false;
+            tab.navigationStarted = true;
+        }
+    }
+
+    public void markNavigationStarted(WebView view) {
+        Tab tab = findByView(view);
+        if (tab != null) tab.navigationStarted = true;
     }
 
     public void onPageFinished(WebView view, String url) {
@@ -276,6 +297,7 @@ public final class ChatTabsController {
         if (tab == null) return;
         tab.view = fresh;
         tab.ready = false;
+        tab.navigationStarted = true; // The Activity immediately reloads its saved URL.
         boolean active = tab.id.equals(activeId);
         fresh.setVisibility(active ? View.VISIBLE : View.INVISIBLE);
         fresh.setImportantForAccessibility(active
